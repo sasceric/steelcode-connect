@@ -1,1 +1,0 @@
-{"root":["./types/nitro-nuxt.d.ts","../server/api/customers.ts","../server/api/mails.ts","../server/api/members.ts","../server/api/notifications.ts","../server/routes/api/[...path].ts","../server/routes/api/v1/auth/logout.post.ts","./types/nitro.d.ts"],"version":"6.0.3"}

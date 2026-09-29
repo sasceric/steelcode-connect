@@ -1,0 +1,24 @@
+# macOS and IDE files
+.DS_Store
+.idea/
+
+# Local package-manager cache
+.pnpm-store/
+
+# Local environment and secrets
+.env.local
+.env.*.local
+backend/.env.local
+frontend/.env.local
+
+# Dependencies
+backend/vendor/
+frontend/node_modules/
+
+# Generated application files
+backend/var/
+frontend/.nuxt/
+frontend/.output/
+
+# Local logs
+*.log
