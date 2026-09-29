@@ -1,0 +1,46 @@
+@import "tailwindcss" theme(static);
+@import "@nuxt/ui";
+
+button:not(:disabled),
+a[href],
+[role="button"],
+input[type="checkbox"],
+input[type="radio"],
+select {
+  cursor: pointer;
+}
+
+[data-slot='th'][data-pinned='right'] {
+  text-align: center;
+  box-shadow: inset 8px 0 12px -8px rgb(0 0 0 / 0.3);
+}
+
+[data-slot='td'][data-pinned='right'] {
+  box-shadow: inset 8px 0 12px -8px rgb(0 0 0 / 0.3);
+}
+
+[data-slot='td'][data-pinned='right'] > div {
+  display: flex;
+  justify-content: center !important;
+  text-align: center !important;
+}
+
+[data-slot='td'][data-pinned='right'] .ml-auto {
+  margin-left: 0 !important;
+}
+
+@theme static {
+  --font-sans: 'Public Sans', sans-serif;
+
+  --color-blue-50: #EFF7FF;
+  --color-blue-100: #DCEEFF;
+  --color-blue-200: #B9DCFF;
+  --color-blue-300: #8AC6FF;
+  --color-blue-400: #4B9DFF;
+  --color-blue-500: #066AE0;
+  --color-blue-600: #0559BF;
+  --color-blue-700: #064A9C;
+  --color-blue-800: #073D7D;
+  --color-blue-900: #092F60;
+  --color-blue-950: #061D3D;
+}

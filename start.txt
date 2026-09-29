@@ -1,0 +1,896 @@
+Da, za ovakav proizvod Symfony + Vue ima dosta smisla — možda čak više nego Laravel, posebno zato što već radiš ozbiljne Shopware/Symfony integracije.
+
+Ja bih za SteelCode Connect vjerovatno izabrao:
+
+Symfony API backend
+Vue 3 admin frontend
+PostgreSQL
+Redis
+Symfony Messenger
+S3-compatible storage
+Zašto Symfony odgovara ovom projektu
+
+Ovo nije obični CRUD SaaS. Glavni dio proizvoda su:
+
+integracije s distributerima
+veliki importi proizvoda
+asinhrona obrada
+mapiranje podataka
+retry mehanizmi
+veliki broj background jobova
+API za Shopware i druge sisteme
+audit logovi i monitoring
+
+Tu je Symfony veoma dobar jer te prirodno tjera na jasnu strukturu.
+
+Možeš imati:
+
+src/
+├── Catalog/
+├── Distributor/
+├── Integration/
+├── Mapping/
+├── Sync/
+├── Tenant/
+├── Billing/
+└── Shared/
+
+Svaki modul može imati svoj:
+
+Domain/
+Application/
+Infrastructure/
+UI/
+
+Ne moraš odmah praviti puni DDD, ali Symfony se dobro uklapa u modularni monolit.
+
+Preporučena arhitektura
+Vue 3 SPA
+    │
+    ▼
+Symfony REST API
+    │
+    ├── Tenant management
+    ├── Distributor connections
+    ├── Shop connections
+    ├── Product mappings
+    ├── Pricing rules
+    ├── Sync orchestration
+    └── Billing
+    │
+    ▼
+Symfony Messenger
+    │
+    ├── Product import queue
+    ├── Stock queue
+    ├── Price queue
+    ├── Media queue
+    └── Export queue
+Symfony backend
+
+Koristio bih:
+
+Symfony
+Doctrine ORM
+Symfony Messenger
+Symfony Scheduler
+Symfony Security
+Symfony Validator
+Symfony Serializer
+Symfony RateLimiter
+Symfony Lock
+Symfony Workflow
+PostgreSQL
+Redis
+JWT ili OAuth2 za vanjske konektore
+
+Za API imaš dvije opcije.
+
+Čisti Symfony kontroleri
+#[Route('/api/connections', methods: ['POST'])]
+public function create(
+    CreateConnectionRequest $request,
+    CreateConnectionHandler $handler,
+): JsonResponse {
+    $connection = $handler->handle($request);
+
+    return $this->json($connection, Response::HTTP_CREATED);
+}
+
+Ovo ti daje potpunu kontrolu.
+
+API Platform
+
+API Platform ubrzava:
+
+CRUD endpointove
+validaciju
+OpenAPI dokumentaciju
+filtere
+pagination
+security pravila
+
+Ali ne bih kompletan sync sistem pokušavao ugurati u generički API Platform CRUD.
+
+Najbolja kombinacija može biti:
+
+API Platform za tenants, users, connections i osnovne entitete
+Custom Symfony endpointi za sync, mapping i kompleksne operacije
+Vue frontend
+
+Za admin SaaS aplikaciju bih koristio:
+
+Vue 3
+TypeScript
+Vite
+Pinia
+Vue Router
+TanStack Query
+
+TanStack Query ti može pomoći za:
+
+API caching
+automatski refetch
+loading state
+retries
+invalidation nakon izmjena
+polling statusa sinhronizacije
+
+Primjer strukture:
+
+frontend/
+├── src/
+│   ├── modules/
+│   │   ├── auth/
+│   │   ├── connections/
+│   │   ├── products/
+│   │   ├── mappings/
+│   │   ├── sync/
+│   │   └── billing/
+│   ├── components/
+│   ├── api/
+│   ├── router/
+│   └── stores/
+Vue ili Nuxt
+
+Za samu SaaS administraciju bih prije koristio Vue SPA nego Nuxt.
+
+Nuxt je odličan za:
+
+javnu stranicu
+SEO
+landing stranice
+dokumentaciju
+blog
+server-side rendering
+
+Ali dashboard iza logina nema mnogo koristi od SSR-a.
+
+Možeš imati:
+
+connect.steelcode.dev       → Nuxt marketing stranica
+app.connect.steelcode.dev   → Vue SaaS aplikacija
+api.connect.steelcode.dev   → Symfony API
+
+Ili jednostavnije za MVP:
+
+connect.steelcode.dev       → Vue aplikacija
+connect.steelcode.dev/api   → Symfony API
+Symfony Messenger kao srce sistema
+
+Messenger bi bio jedan od najvažnijih dijelova.
+
+Na primjer:
+
+final readonly class StartCatalogSync
+{
+    public function __construct(
+        public string $tenantId,
+        public string $connectionId,
+    ) {
+    }
+}
+
+Handler:
+
+#[AsMessageHandler]
+final readonly class StartCatalogSyncHandler
+{
+    public function __construct(
+        private DistributorRegistry $distributors,
+        private MessageBusInterface $bus,
+    ) {
+    }
+
+    public function __invoke(StartCatalogSync $message): void
+    {
+        $adapter = $this->distributors->forConnection(
+            $message->connectionId
+        );
+
+        foreach ($adapter->fetchProductPages() as $page) {
+            $this->bus->dispatch(
+                new ImportProductPage(
+                    tenantId: $message->tenantId,
+                    connectionId: $message->connectionId,
+                    page: $page,
+                )
+            );
+        }
+    }
+}
+
+Transporti:
+
+framework:
+    messenger:
+        transports:
+            async_catalog: '%env(MESSENGER_CATALOG_DSN)%'
+            async_stock: '%env(MESSENGER_STOCK_DSN)%'
+            async_media: '%env(MESSENGER_MEDIA_DSN)%'
+            failed: 'doctrine://default?queue_name=failed'
+
+Routing:
+
+framework:
+    messenger:
+        routing:
+            App\Sync\Message\ImportProductPage: async_catalog
+            App\Sync\Message\UpdateStockBatch: async_stock
+            App\Sync\Message\DownloadMedia: async_media
+
+Tako možeš nezavisno skalirati stock, katalog i slike.
+
+Adapteri
+
+Symfony dependency injection je odličan za registry konektora.
+
+interface DistributorAdapterInterface
+{
+    public function supports(string $provider): bool;
+
+    public function testConnection(
+        DistributorConnection $connection
+    ): ConnectionTestResult;
+
+    public function fetchProducts(
+        DistributorConnection $connection,
+        ProductCursor $cursor
+    ): ProductPage;
+}
+
+KimTec:
+
+final readonly class KimTecAdapter implements DistributorAdapterInterface
+{
+    public function supports(string $provider): bool
+    {
+        return $provider === 'kimtec';
+    }
+}
+
+Registry:
+
+final readonly class DistributorRegistry
+{
+    public function __construct(
+        #[TaggedIterator('app.distributor_adapter')]
+        private iterable $adapters,
+    ) {
+    }
+
+    public function get(string $provider): DistributorAdapterInterface
+    {
+        foreach ($this->adapters as $adapter) {
+            if ($adapter->supports($provider)) {
+                return $adapter;
+            }
+        }
+
+        throw new UnsupportedDistributorException($provider);
+    }
+}
+
+Service config:
+
+services:
+    _instanceof:
+        App\Integration\DistributorAdapterInterface:
+            tags: ['app.distributor_adapter']
+
+Ovo je veoma čisto i lako proširivo.
+
+Multi-tenancy
+
+Za početak:
+
+jedna aplikacija
+jedna baza
+tenant_id u poslovnim tabelama
+
+Primjer:
+
+#[ORM\Entity]
+class DistributorConnection
+{
+    #[ORM\ManyToOne]
+    private Tenant $tenant;
+
+    #[ORM\Column]
+    private string $provider;
+
+    #[ORM\Column(type: Types::JSON)]
+    private array $encryptedCredentials;
+}
+
+Ali nemoj se osloniti samo na to da developer svaki put ručno napiše:
+
+WHERE tenant_id = :tenant
+
+Uvedi centralni tenant context:
+
+final readonly class TenantContext
+{
+    public function __construct(
+        private ?TenantId $tenantId,
+    ) {
+    }
+
+    public function requireTenantId(): TenantId
+    {
+        return $this->tenantId
+            ?? throw new MissingTenantContextException();
+    }
+}
+
+Zatim repository metode uvijek eksplicitno zahtijevaju tenant:
+
+public function findForTenant(
+    TenantId $tenantId,
+    ConnectionId $connectionId,
+): DistributorConnection
+
+To smanjuje mogućnost curenja podataka između klijenata.
+
+Autentifikacija
+
+Razdvojio bih tri autentifikacijska slučaja:
+
+Vue korisnici
+email i password
+HTTP-only session cookie
+CSRF zaštita
+kasnije 2FA
+
+Za browser aplikaciju ne moraš odmah koristiti JWT. Session cookie je često jednostavniji i sigurniji.
+
+Shopware konektor
+client ID
+client secret
+kratkotrajni access token
+scopeovi
+
+Primjer:
+
+products:read
+products:write
+sync:trigger
+sync:status
+Distributer credentials
+
+Credentials za KimTec i druge providere:
+
+enkriptovati prije spremanja
+ne vraćati ih frontend aplikaciji
+sakriti u logovima
+omogućiti rotaciju
+auditovati izmjene
+Symfony Workflow
+
+Workflow može biti koristan za statuse sync procesa:
+
+created
+queued
+running
+partially_completed
+completed
+failed
+cancelled
+
+Primjer:
+
+framework:
+    workflows:
+        sync_run:
+            type: state_machine
+            supports:
+                - App\Sync\Domain\SyncRun
+            initial_marking: created
+            places:
+                - created
+                - queued
+                - running
+                - completed
+                - failed
+                - cancelled
+Zašto Symfony umjesto Laravela
+
+Za ovaj konkretan projekt Symfony ti daje prednost u:
+
+strožijoj arhitekturi
+dependency injectionu
+Messenger infrastrukturi
+dugoročnom održavanju
+kompleksnim domain pravilima
+jasnom odvajanju integracija
+kompatibilnosti s načinom razmišljanja iz Shopwarea
+jednostavnijem dijeljenju određenih PHP biblioteka između SaaS-a i Shopware plugina
+
+Posljednja tačka je posebno zanimljiva.
+
+Možeš imati zajednički Composer paket:
+
+steelcode/distribution-contracts
+
+U njemu:
+
+DTO objekti
+enum vrijednosti
+normalizovani modeli
+API request/response contracti
+validation pravila
+
+Taj paket koristi:
+
+Symfony SaaS backend
+Shopware plugin
+CLI importer
+eventualni self-hosted worker
+Nedostaci Symfony pristupa
+
+Symfony će vjerovatno zahtijevati više početnog rada za:
+
+registraciju
+password reset
+billing
+korisničke pozivnice
+email verification
+osnovni SaaS onboarding
+
+Laravel tu često brže vodi do prvog ekrana.
+
+Ali kod tvog proizvoda najveći posao neće biti login i billing. Najveći posao će biti sync engine i integracije. Tu Symfony može biti bolja dugoročna osnova.
+
+Kako bih ja složio repozitorij
+
+Monorepo:
+
+steelcode-connect/
+├── backend/
+│   ├── src/
+│   ├── config/
+│   ├── migrations/
+│   └── tests/
+├── frontend/
+│   ├── src/
+│   └── tests/
+├── packages/
+│   └── distribution-contracts/
+├── infrastructure/
+│   ├── docker/
+│   ├── nginx/
+│   └── supervisor/
+└── compose.yaml
+
+Backend moduli:
+
+src/
+├── Identity/
+├── Tenant/
+├── Connection/
+├── Catalog/
+├── Mapping/
+├── Pricing/
+├── Sync/
+├── Integration/
+│   ├── Distributor/
+│   │   ├── KimTec/
+│   │   └── GenericCsv/
+│   └── SalesChannel/
+│       └── Shopware/
+├── Billing/
+└── Shared/
+Moja konačna preporuka
+
+Za tebe bih izabrao:
+
+Backend: Symfony modularni monolit
+Frontend: Vue 3 SPA + TypeScript
+Database: PostgreSQL
+Queue: Symfony Messenger + Redis
+Cache: Redis
+Storage: S3-compatible
+API docs: OpenAPI
+Auth: session za Vue, OAuth2/client credentials za konektore
+Deployment: Docker Compose na jednom VPS-u
+
+Počni kao modularni monolit, ne kao mikroservisi.
+
+Prvi vertikalni dio neka bude:
+
+Kreiranje firme
+→ povezivanje KimTeca
+→ povezivanje Shopwarea
+→ preuzimanje 100 proizvoda
+→ normalizacija
+→ prikaz proizvoda u Vue adminu
+→ slanje u Shopware
+→ sync rezultat i error log
+
+Kad taj cijeli tok radi, već imaš stvarni proizvod. Registracija pretplate, napredni dashboard i deset drugih distributera mogu doći poslije.
+
+a onda odavdje mozemo slati proizvode i na olx, bolje nego sa shopware-a, to da budu kao neki plugini, npr na olx na ananas itd
+
+Da, to je zapravo puno bolja arhitektura nego da proizvode šalješ na OLX direktno iz Shopwarea.
+
+SteelCode Connect bi postao centralni Product Information & Marketplace Integration Hub:
+
+KimTec ───────┐
+Comtrade ─────┤
+CSV/XML ──────┤
+ERP/Pantheon ─┤
+Shopware ─────┘
+              ▼
+       SteelCode Connect
+     centralni katalog proizvoda
+              │
+      ┌───────┼──────────┬──────────┐
+      ▼       ▼          ▼          ▼
+  Shopware   OLX       Ananas    WooCommerce
+Dvije vrste konektora
+
+Nemoj ih interno sve nazivati pluginima. U arhitekturi ih podijeli na:
+
+Source konektori
+
+Oni unose podatke u platformu:
+
+KimTec
+drugi distributeri
+ERP
+CSV/XML feed
+postojeći Shopware shop
+WooCommerce
+ručni unos
+interface SourceConnectorInterface
+{
+    public function testConnection(Connection $connection): ConnectionResult;
+
+    public function fetchProducts(
+        Connection $connection,
+        ?Cursor $cursor = null,
+    ): ProductBatch;
+
+    public function fetchStock(Connection $connection): StockBatch;
+
+    public function fetchPrices(Connection $connection): PriceBatch;
+}
+Destination ili Channel konektori
+
+Oni objavljuju proizvode iz platforme:
+
+Shopware
+OLX
+Ananas
+WooCommerce
+Shopify
+Facebook/Meta katalog
+Google Merchant
+drugi marketplace sistemi
+interface ChannelConnectorInterface
+{
+    public function testConnection(Connection $connection): ConnectionResult;
+
+    public function publishProduct(
+        Connection $connection,
+        ChannelProduct $product,
+    ): PublishResult;
+
+    public function updateProduct(
+        Connection $connection,
+        ChannelProduct $product,
+    ): PublishResult;
+
+    public function updateStock(
+        Connection $connection,
+        StockUpdate $stock,
+    ): PublishResult;
+
+    public function updatePrice(
+        Connection $connection,
+        PriceUpdate $price,
+    ): PublishResult;
+
+    public function removeProduct(
+        Connection $connection,
+        ExternalListingId $listingId,
+    ): PublishResult;
+}
+
+Jedan sistem može biti i source i destination. Shopware, recimo, može:
+
+poslati postojeće proizvode u SteelCode Connect
+primati nove proizvode iz distributera
+slati izmjene nazad u centralni katalog
+Centralni katalog je najvažniji
+
+Proizvod ne treba pripadati ni KimTecu, ni Shopwareu, ni OLX-u.
+
+Treba postojati kao nezavisan proizvod unutar platforme:
+
+Centralni proizvod
+SKU: LAP-LEN-001
+Naziv: Lenovo ThinkPad E16
+EAN: 123456789
+Osnovni opis
+Slike
+Karakteristike
+Nabavna cijena
+Dostupna količina
+
+Zatim za svaki prodajni kanal ima svoju verziju:
+
+Shopware verzija
+- kategorija: Prijenosni računari
+- cijena: 1.599 KM
+- puni HTML opis
+- sve slike
+
+OLX verzija
+- OLX kategorija: Laptopi
+- cijena: 1.649 KM
+- kraći naslov
+- opis prilagođen OLX-u
+- OLX listing ID
+
+Ananas verzija
+- Ananas kategorija
+- obavezni atributi
+- marketplace provizija
+- cijena: 1.679 KM
+
+Zbog toga bi ti trebali entiteti poput:
+
+products
+product_variants
+product_media
+product_properties
+
+channels
+channel_connections
+channel_products
+channel_category_mappings
+channel_attribute_mappings
+channel_price_rules
+channel_publication_rules
+channel_listings
+
+channel_listings čuva vezu između centralnog proizvoda i vanjskog oglasa:
+
+product_id
+channel_connection_id
+external_id
+external_url
+status
+last_published_at
+last_synced_at
+last_error
+OLX nije samo običan export
+
+Za OLX moraš imati poseban adapter koji poznaje njegova pravila:
+
+kategorije
+obavezna polja po kategoriji
+cijenu
+stanje artikla
+lokaciju
+dostavu
+fotografije
+obnovu oglasa
+aktivaciju i deaktivaciju
+dostupnost proizvoda
+ID postojećeg oglasa
+
+Tok bi izgledao ovako:
+
+KimTec proizvod
+    ↓
+normalizacija
+    ↓
+pravilo marže
+    ↓
+OLX category mapping
+    ↓
+generisanje OLX naslova i opisa
+    ↓
+objava ili update oglasa
+
+Kad distributer promijeni zalihu:
+
+KimTec stock = 0
+    ↓
+SteelCode Connect
+    ├── Shopware stock = 0
+    ├── OLX oglas deaktiviran
+    └── Ananas stock = 0
+
+Kad se proizvod proda na jednom kanalu, eventualno možeš ažurirati druge kanale, zavisno od toga gdje je glavni izvor zalihe.
+
+Kanalna pravila
+
+Svaki klijent treba moći napraviti različita pravila:
+
+KimTec → Shopware
+- marža +18%
+- uvoz samo proizvoda sa zalihom
+- automatski kreiraj proizvode
+
+KimTec → OLX
+- marža +22%
+- zaokruži cijenu na .90
+- objavi samo proizvode skuplje od 50 KM
+- maksimalno 5 slika
+- dodaj tekst o garanciji
+
+KimTec → Ananas
+- marža +25%
+- uključi marketplace proviziju
+- objavi samo odabrane kategorije
+
+To znači da cijena ne treba biti samo polje na proizvodu. Potreban ti je pricing engine:
+
+nabavna cijena
++ distributer marža
++ marketplace provizija
++ PDV pravilo
++ fiksni trošak dostave
++ minimalna marža
++ zaokruživanje
+= prodajna cijena kanala
+“Plugin marketplace” unutar SaaS-a
+
+U Vue administraciji korisnik bi vidio nešto poput:
+
+Connections
+
+Sources
+✓ KimTec
++ Comtrade
++ Generic XML
++ Pantheon
+
+Sales channels
+✓ Shopware 6
+✓ OLX
++ Ananas
++ WooCommerce
++ Shopify
+
+Te konektore možeš prikazivati kao plugine, iako su tehnički Symfony moduli/adapters.
+
+Svaki connector descriptor može imati:
+
+final class OlxConnectorDefinition implements ConnectorDefinitionInterface
+{
+    public function key(): string
+    {
+        return 'olx';
+    }
+
+    public function name(): string
+    {
+        return 'OLX';
+    }
+
+    public function type(): ConnectorType
+    {
+        return ConnectorType::CHANNEL;
+    }
+
+    public function capabilities(): array
+    {
+        return [
+            Capability::PRODUCT_CREATE,
+            Capability::PRODUCT_UPDATE,
+            Capability::PRICE_UPDATE,
+            Capability::STOCK_UPDATE,
+            Capability::MEDIA_UPLOAD,
+            Capability::ORDER_IMPORT,
+        ];
+    }
+}
+
+Frontend dobije ove definicije iz API-ja i automatski prikaže dostupne konektore.
+
+Kasnije i narudžbe
+
+Platforma ne mora ostati samo na proizvodima. Marketplace konektori mogu uvoziti i narudžbe:
+
+OLX / Ananas narudžba
+          ↓
+    SteelCode Connect
+          ↓
+  Shopware ili ERP
+
+Tada imaš dva toka:
+
+Product flow:
+Distributer → Connect → prodajni kanali
+
+Order flow:
+Prodajni kanali → Connect → Shopware/ERP
+
+I onda Connect postaje prava commerce integration platforma, ne samo distributor importer.
+
+Gdje je Shopware u toj priči?
+
+Shopware više nije glavni sistem kroz koji sve mora prolaziti. On je samo jedan od kanala:
+
+SteelCode Connect = centralna integracijska logika
+Shopware = webshop i order management
+OLX = marketplace kanal
+Ananas = marketplace kanal
+KimTec = supplier
+Pantheon = ERP/računovodstvo
+
+To je važno jer neki korisnik možda želi:
+
+KimTec → OLX
+
+bez Shopwarea.
+
+Drugi želi:
+
+Pantheon → Shopware + OLX + Ananas
+
+Treći:
+
+Shopware → OLX
+
+Sve kombinacije koristi isti sistem.
+
+Preporučeni MVP
+
+Ipak nemoj odmah graditi pet konektora. Prvi stvarni proizvod bih napravio ovako:
+
+KimTec source connector
+        ↓
+centralni katalog
+        ↓
+Shopware channel connector
+        ↓
+OLX channel connector
+
+Obavezne funkcije:
+
+preuzimanje proizvoda iz KimTeca
+centralni proizvod
+category mapping
+channel-specific cijena
+objava u Shopware
+objava na OLX
+update cijene i zalihe
+deaktivacija proizvoda
+sync historija
+retry neuspjelih objava
+ručni odabir proizvoda za svaki kanal
+
+To je već konkretan proizvod koji možeš prodavati kao:
+
+Uvezite distributera i upravljajte webshopom i marketplace oglasima iz jednog mjesta.
+
+Najveća vrijednost nije samo “KimTec konektor”, nego:
+
+Jedan katalog → više prodajnih kanala.
+
+Tako KimTec konektor privlači korisnika, a OLX, Ananas i Shopware konektori povećavaju mjesečnu pretplatu i otežavaju mu da napusti platformu.

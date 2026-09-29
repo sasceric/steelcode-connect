@@ -1,0 +1,9 @@
+{
+  "pid": 18450,
+  "startedAt": 1790636270053,
+  "command": "dev",
+  "cwd": "/Users/suadasceric/Projects/steelcode-connect/frontend",
+  "port": 3000,
+  "hostname": "::1",
+  "url": "http://[::1]:3000"
+}

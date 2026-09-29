@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: DejaVu Sans, sans-serif; color: #1f2937; font-size: 12px; margin: 42px; }
+    h1 { color: #202b36; font-size: 12px; font-weight: 700; margin: 0 0 4px; }
+    .invoice-number { color: #066AE0; font-size: 16px; font-weight: 700; }
+    .logo { width: 170px; height: auto; display: block; margin: 0 0 2px auto; }
+    .muted { color: #6b7280; }
+    .top, .table { width: 100%; border-collapse: collapse; }
+    .top td { vertical-align: top; }
+    .right { text-align: right; }
+    .divider { border-top: 1px solid #e5e7eb; margin: 8px 0 12px; }
+    .table-spacer { height: 20px; }
+    .table th { background: #f3f4f6; text-align: left; padding: 12px; color: #4b5563; }
+    .table th.amount, .amount { text-align: right; }
+    .table td { padding: 14px 12px; border-bottom: 1px solid #e5e7eb; }
+    .totals { width: 280px; margin-left: auto; }
+    .totals td { padding: 7px; }
+    .total { font-size: 18px; font-weight: bold; border-top: 2px solid #154ec1; }
+    .label { font-size: 10px; color: #6b7280; font-weight: bold; margin-bottom: 7px; }
+    .bank-details { margin-top: 32px; padding: 16px 0; border-top: 1px solid #e5e7eb; color: #4b5563; font-size: 10px; line-height: 19px; }
+    .invoice-footer { position: fixed; bottom: -20px; left: 0; right: 0; padding-top: 12px; border-top: 1px solid #9ca3af; text-align: center; color: #6b7280; font-size: 10px; }
+  </style>
+</head>
+<body>
+  <table class="top"><tr>
+    <td><h1>{{ labels.title }}</h1><div class="invoice-number">{{ invoice.number }}</div></td>
+    <td class="right"><img src="{{ logo }}" class="logo" alt="SteelCode">{{ issuer.address }}<br>{% if issuer.oib %}Company ID: {{ issuer.oib }}<br>{% endif %}{% if issuer.pdv %}VAT ID: {{ issuer.pdv }}<br>{% endif %}{{ issuer.email }}<br>{{ issuer.phone }}</td>
+  </tr></table>
+  <div class="divider"></div>
+  <table class="top"><tr>
+    <td><div class="label">{{ labels.billed_to }}</div><strong>{{ tenant.name }}</strong><br>{{ customer_address }}<br>{% if tenant.oib %}Company ID: {{ tenant.oib }}<br>{% endif %}{% if tenant.pdv %}VAT ID: {{ tenant.pdv }}<br>{% endif %}{{ tenant.email }}</td>
+    <td class="right"><span class="muted">{{ labels.date }}:</span> {{ invoice.issuedAt|date('d.m.Y') }}<br><span class="muted">{{ labels.billing_period }}:</span> {{ billing_period }}<br><span class="muted">{{ labels.status }}:</span> {{ labels.open }}</td>
+  </tr></table>
+  <div class="table-spacer"></div>
+  <table class="table"><thead><tr><th>{{ labels.description }}</th><th class="amount">{{ labels.amount }}</th></tr></thead><tbody><tr><td><strong>{{ invoice.plan|capitalize }} {{ labels.subscription }}</strong><br><span class="muted">{{ labels.subscription_billing }}</span></td><td class="amount">{{ subtotal }}</td></tr></tbody></table>
+  <table class="totals"><tr><td class="muted">{{ labels.subtotal }}</td><td class="amount">{{ subtotal }}</td></tr><tr><td class="muted">{{ labels.vat }} (17%)</td><td class="amount">{{ vat }}</td></tr><tr class="total"><td>{{ labels.total }}</td><td class="amount">{{ total }}</td></tr></table>
+  <div class="bank-details"><strong>BANKA:</strong> UniCredit Bank d.d<br><strong>FIRMA:</strong> UD &quot;SteelCode&quot; vl. Aščerić Suad i Telalović Maid, Zenica<br><strong>TRN:</strong> 3385802253303574<br><strong>SWIFT KOD:</strong> UNCRBA22<br><strong>IBAN:</strong> BA393385802253303574</div>
+  <div class="invoice-footer">Račun je kreiran na računaru i važi bez potpisa i pečata.</div>
+</body>
+</html>

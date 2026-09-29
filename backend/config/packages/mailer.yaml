@@ -1,0 +1,3 @@
+framework:
+    mailer:
+        dsn: 'smtp://%env(BREVO_SMTP_USERNAME)%:%env(BREVO_SMTP_KEY)%@%env(BREVO_SMTP_HOST)%:%env(int:BREVO_SMTP_PORT)%'
