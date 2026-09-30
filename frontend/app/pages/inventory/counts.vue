@@ -10,7 +10,7 @@ type Count = {
   items: { productId: string, sku: string | null, expectedQuantity: number, countedQuantity: number, variance: number }[]
 }
 type Warehouse = { id: string, name: string, active: boolean }
-type Product = { id: string, name: string, sku: string | null }
+type Product = { id: string, name: string, sku: string | null, variantCombination?: string | null }
 
 const { t } = useI18n()
 const notify = useAppToast()
@@ -53,7 +53,13 @@ const { data: warehousesData } = await useAsyncData('inventory-count-warehouses'
 const warehouseItems = computed(() => (warehousesData.value?.warehouses ?? []).filter(warehouse => warehouse.active).map(warehouse => ({ label: warehouse.name, value: warehouse.id })))
 const productItems = computed(() => {
   const options = [...Object.values(selectedOptions), ...productOptions.value.filter(product => !selectedOptions[product.id])]
-  return options.map(product => ({ label: product.sku ? `${product.name} · ${product.sku}` : product.name, value: product.id }))
+  return options.map(product => ({
+    label: product.name,
+    productName: product.name,
+    productNumber: product.sku,
+    variantCombination: product.variantCombination,
+    value: product.id
+  }))
 })
 const selectedProducts = computed(() => countForm.productIds.map(id => selectedOptions[id]).filter((product): product is Product => !!product))
 const loadProducts = async (reset = false) => {
@@ -66,7 +72,7 @@ const loadProducts = async (reset = false) => {
   const currentRequest = productRequestId
   productsLoading.value = true
   try {
-    const params = new URLSearchParams({ view: 'options', limit: '25', page: String(productPage.value), sort: 'name', direction: 'ASC' })
+    const params = new URLSearchParams({ view: 'options', includeVariants: '1', limit: '25', page: String(productPage.value), sort: 'name', direction: 'ASC' })
     if (productSearch.value.trim()) params.set('search', productSearch.value.trim())
     const response = await apiFetch<{ products: Product[], pagination?: { hasMore: boolean } }>(`/products?${params}`)
     if (currentRequest !== productRequestId) return
@@ -155,7 +161,13 @@ const columns: TableColumn<Count>[] = [
 </script>
 
 <template>
-  <AppDataTable :data="counts" :columns="columns" :get-row-id="(row) => row.id" :loading="status === 'pending'" :max-height="null" table-key="inventory-counts">
+  <AppDataTable
+    :data="counts"
+    :columns="columns"
+    :get-row-id="(row) => row.id"
+    :loading="status === 'pending'"
+    table-key="inventory-counts"
+  >
     <template #header>
       <div class="flex items-center justify-between gap-3">
         <p class="text-sm font-medium text-highlighted">{{ t('inventoryCounts.title') }} ({{ data.pagination.total }})</p>
@@ -168,7 +180,6 @@ const columns: TableColumn<Count>[] = [
         v-model:page="page"
         v-model:page-size="pageSize"
         :total="data.pagination.total"
-        class="border-t-0 pt-0"
       />
     </template>
   </AppDataTable>
@@ -214,7 +225,7 @@ const columns: TableColumn<Count>[] = [
           :data="selectedCount.items"
           :columns="detailColumns"
           :get-row-id="row => row.productId"
-          :max-height="null"
+          max-height="h-auto"
           table-key="inventory-count-lines"
         />
         <div v-if="selectedCount.status === 'draft'" class="flex justify-end">

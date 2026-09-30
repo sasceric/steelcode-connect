@@ -3,6 +3,8 @@
 namespace App;
 
 use App\Message\GenerateMonthlyInvoices;
+use App\Message\QueueShopwareSalesSync;
+use Symfony\Component\Console\Messenger\RunCommandMessage;
 use Symfony\Component\Scheduler\Attribute\AsSchedule;
 use Symfony\Component\Scheduler\RecurringMessage;
 use Symfony\Component\Scheduler\Schedule as SymfonySchedule;
@@ -23,6 +25,8 @@ class Schedule implements ScheduleProviderInterface
             ->stateful($this->cache) // ensure missed tasks are executed
             ->processOnlyLastMissedRun(true) // ensure only last missed task is run
 
-            ->add(RecurringMessage::cron('0 0 * * *', new GenerateMonthlyInvoices(), 'Europe/Sarajevo'));
+            ->add(RecurringMessage::cron('0 0 * * *', new GenerateMonthlyInvoices(), 'Europe/Sarajevo'))
+            ->add(RecurringMessage::every('1 minute', new QueueShopwareSalesSync()))
+            ->add(RecurringMessage::every('1 minute', new RunCommandMessage('app:stock-sync:dispatch --limit=100', false)));
     }
 }

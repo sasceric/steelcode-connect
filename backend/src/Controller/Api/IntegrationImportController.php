@@ -10,6 +10,7 @@ use App\Entity\User;
 use App\Integration\IntegrationImportLogger;
 use App\Integration\IntegrationImportLogReader;
 use App\Message\ImportShopwareProducts;
+use App\Message\ImportShopwareSales;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -137,6 +138,53 @@ final class IntegrationImportController extends AbstractController
         ], Response::HTTP_ACCEPTED);
     }
 
+    #[Route('/{id}/imports/sales', methods: ['POST'])]
+    public function queueSales(
+        string $id,
+        EntityManagerInterface $entityManager,
+        MessageBusInterface $messageBus,
+        TranslatorInterface $translator,
+        IntegrationImportLogger $importLogger,
+    ): JsonResponse {
+        $connection = $this->connection($id, $entityManager, true);
+        $settings = $connection->getConfiguration()['importSettings'] ?? [];
+        $areas = is_array($settings) && is_array($settings['areas'] ?? null) ? $settings['areas'] : [];
+        if (
+            $connection->getConnectorKey() !== 'shopware'
+            || !in_array('channel', $connection->getDirections(), true)
+            || !$connection->isEnabled()
+            || $connection->getStatus() !== 'active'
+            || (!(bool) ($areas['salesCustomers'] ?? false) && !(bool) ($areas['salesOrders'] ?? false))
+        ) {
+            return $this->json([
+                'message' => $this->message($translator, 'integration.sales_import_not_available'),
+            ], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+
+        $activeRun = $entityManager->getRepository(IntegrationImportRun::class)->findOneBy([
+            'connection' => $connection,
+            'type' => 'sales',
+            'status' => ['queued', 'running'],
+        ]);
+        if ($activeRun instanceof IntegrationImportRun) {
+            return $this->json([
+                'message' => $this->message($translator, 'integration.sales_import_already_running'),
+                'run' => $this->payload($activeRun),
+            ], Response::HTTP_CONFLICT);
+        }
+
+        $run = new IntegrationImportRun($connection->getTenant(), $connection, 'sales');
+        $entityManager->persist($run);
+        $importLogger->info($run, 'queued', 'integrationLog.salesQueued');
+        $entityManager->flush();
+        $messageBus->dispatch(new ImportShopwareSales($run->getId()->toRfc4122()));
+
+        return $this->json([
+            'message' => $this->message($translator, 'integration.sales_import_queued'),
+            'run' => $this->payload($run),
+        ], Response::HTTP_ACCEPTED);
+    }
+
     #[Route('/{id}/imports/{runId}/cancel', methods: ['POST'])]
     public function cancel(
         string $id,
@@ -170,7 +218,7 @@ final class IntegrationImportController extends AbstractController
         $importLogger->info(
             $run,
             'cancelled',
-            'integrationLog.cancelled',
+            $run->getType() === 'sales' ? 'integrationLog.salesCancelled' : 'integrationLog.cancelled',
         );
         $entityManager->flush();
 

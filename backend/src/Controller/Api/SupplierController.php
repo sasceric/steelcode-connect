@@ -84,6 +84,9 @@ final class SupplierController extends AbstractController
         if ($name === '' || $code === '') {
             return $this->json(['message' => 'Name and code are required.'], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
+        if ($error = $this->validateSupplierInput($name, $code, $data)) {
+            return $this->json(['message' => $error], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
         if ($entityManager->getRepository(Supplier::class)->findOneBy(['tenant' => $tenant, 'code' => $code]) instanceof Supplier) {
             return $this->json(['message' => 'Supplier code already exists.'], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
@@ -130,6 +133,9 @@ final class SupplierController extends AbstractController
         $code = $this->code((string) ($data['code'] ?? $supplier->getCode()));
         if ($name === '' || $code === '') {
             return $this->json(['message' => 'Name and code are required.'], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+        if ($error = $this->validateSupplierInput($name, $code, $data)) {
+            return $this->json(['message' => $error], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
         $duplicate = $entityManager->getRepository(Supplier::class)->findOneBy([
             'tenant' => $tenant,
@@ -193,6 +199,32 @@ final class SupplierController extends AbstractController
         $value = trim((string) $value);
 
         return $value === '' ? null : $value;
+    }
+
+    private function validateSupplierInput(string $name, string $code, array $data): ?string
+    {
+        $limits = [
+            'name' => [$name, 255],
+            'code' => [$code, 64],
+            'email' => [$data['email'] ?? '', 255],
+            'phone' => [$data['phone'] ?? '', 64],
+            'contactName' => [$data['contactName'] ?? '', 255],
+            'street' => [$data['street'] ?? '', 255],
+            'postalCode' => [$data['postalCode'] ?? '', 32],
+            'city' => [$data['city'] ?? '', 128],
+            'country' => [$data['country'] ?? '', 128],
+        ];
+        foreach ($limits as $field => [$value, $limit]) {
+            if (mb_strlen(trim((string) $value)) > $limit) {
+                return sprintf('%s is too long (maximum %d characters).', $field, $limit);
+            }
+        }
+        $email = $this->nullable($data['email'] ?? null);
+        if ($email !== null && !filter_var($email, FILTER_VALIDATE_EMAIL)) {
+            return 'Enter a valid supplier email address.';
+        }
+
+        return null;
     }
 
     private function code(string $value): string

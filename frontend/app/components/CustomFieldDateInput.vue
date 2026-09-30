@@ -2,9 +2,10 @@
 import { CalendarDate } from '@internationalized/date'
 
 const model = defineModel<string>({ default: '' })
-const props = withDefaults(defineProps<{ withTime?: boolean; placeholder?: string }>(), {
+const props = withDefaults(defineProps<{ withTime?: boolean; placeholder?: string; disabled?: boolean }>(), {
   withTime: true,
   placeholder: '',
+  disabled: false,
 })
 const calendar = computed<CalendarDate | undefined>({
   get: () => {
@@ -39,13 +40,14 @@ const label = computed(() =>
 </script>
 
 <template>
-  <UPopover :content="{ align: 'start' }" :modal="true">
+  <UPopover :content="{ align: 'start' }" :modal="true" :disabled="disabled">
     <UButton
       :label="label"
       icon="i-lucide-calendar-clock"
       color="neutral"
       variant="outline"
       class="w-full justify-start font-normal"
+      :disabled="disabled"
     />
     <template #content>
       <div class="space-y-3 p-3">

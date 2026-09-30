@@ -2,106 +2,164 @@
 
 namespace App\Tests\Integration;
 
+use App\Controller\Api\PurchasingController;
 use App\Entity\Product;
 use App\Entity\Supplier;
 use App\Entity\SupplierOffer;
+use App\Entity\SupplierOfferPrice;
 use App\Entity\Tenant;
 use App\Entity\TenantMembership;
 use App\Entity\User;
 use App\Entity\Warehouse;
-use Symfony\Bundle\FrameworkBundle\Test\WebTestCase;
+use App\Service\InventoryService;
+use App\Service\InventorySyncOutboxService;
+use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
+use Symfony\Component\DependencyInjection\Container;
+use Symfony\Component\HttpFoundation\Request;
+use Symfony\Component\Mailer\MailerInterface;
+use Symfony\Component\Security\Core\Authentication\Token\Storage\TokenStorage;
+use Symfony\Component\Security\Core\Authentication\Token\UsernamePasswordToken;
 use Symfony\Component\Uid\Uuid;
 
-final class PurchasingApiTest extends WebTestCase
+final class PurchasingApiTest extends KernelTestCase
 {
-    public function testDraftPdfReceiptAndDamageFlow(): void
+    public function testControllerFlowWithoutPersistingFixtures(): void
     {
-        $client = self::createClient();
-        $client->disableReboot();
-        $entityManager = self::getContainer()->get('doctrine')->getManager();
+        self::bootKernel();
+        $entityManager = self::$kernel->getContainer()->get('doctrine')->getManager();
         $connection = $entityManager->getConnection();
         $connection->beginTransaction();
         try {
-            $tenant = new Tenant('Purchasing API test');
-            $user = new User('purchasing-api-'.bin2hex(random_bytes(6)).'@example.test');
+            $tenant = new Tenant('Purchasing controller test');
+            $user = new User('purchasing-'.bin2hex(random_bytes(6)).'@example.test');
             $user->setPassword('not-used');
             $membership = new TenantMembership($tenant, $user, 'owner');
             $warehouse = new Warehouse($tenant, 'default', 'Default warehouse');
             $product = new Product($tenant);
-            $supplier = new Supplier($tenant, 'api_supplier', 'API Supplier');
-            $supplier->update('API Supplier', 'api_supplier', 'supplier@example.test', null, true);
-            $supplier->updateDetails('Purchase team', '1 Supplier Road', '10000', 'Test City', 'BA');
+            $supplier = new Supplier($tenant, 'test_supplier', 'Test Supplier');
+            $supplier->update('Test Supplier', 'test_supplier', 'supplier@example.test', null, true);
+            $supplier->updateDetails('Purchasing', '1 Test Road', '10000', 'Test City', 'BA');
             $offer = new SupplierOffer($tenant, $supplier, $product);
-            $offer->update('SUP-1', '10.0000', 'EUR', '1.0000', 2, true, true);
+            $offer->update('SUP-1', '10.0000', 'EUR', '2.0000', 2, true, true);
             $offer->setPurchaseUnit('case', 12);
+            $offer->replacePrices([
+                new SupplierOfferPrice($offer, '1.0000', '10.0000', 'EUR', null, null),
+                new SupplierOfferPrice($offer, '3.0000', '8.0000', 'EUR', null, null),
+            ]);
             foreach ([$tenant, $user, $membership, $warehouse, $product, $supplier, $offer] as $entity) {
                 $entityManager->persist($entity);
             }
             $entityManager->flush();
-            $client->loginUser($user);
 
-            $client->request('POST', '/api/v1/inventory/purchase-orders', server: ['CONTENT_TYPE' => 'application/json'], content: json_encode([
+            $tokenStorage = new TokenStorage();
+            $tokenStorage->setToken(new UsernamePasswordToken($user, 'main', $user->getRoles()));
+            $services = new Container();
+            $services->set('security.token_storage', $tokenStorage);
+            $controller = new PurchasingController(
+                new InventoryService(new InventorySyncOutboxService()),
+                $entityManager,
+            );
+            $controller->setContainer($services);
+
+            $baseOrder = [
                 'supplierId' => $supplier->getId()->toRfc4122(),
                 'warehouseId' => $warehouse->getId()->toRfc4122(),
                 'currency' => 'EUR',
                 'items' => [['productId' => $product->getId()->toRfc4122(), 'quantity' => 2]],
-            ], JSON_THROW_ON_ERROR));
-            self::assertSame(201, $client->getResponse()->getStatusCode(), $client->getResponse()->getContent());
-            $order = json_decode($client->getResponse()->getContent(), true, 512, JSON_THROW_ON_ERROR)['order'];
-            self::assertSame(12, $order['items'][0]['stockUnitsPerPurchaseUnit']);
-            $orderId = $order['id'];
+            ];
+            $createdResponse = $controller->createOrder($this->jsonRequest($baseOrder), $entityManager);
+            self::assertSame(201, $createdResponse->getStatusCode(), $createdResponse->getContent());
+            $created = $this->payload($createdResponse)['order'];
+            self::assertSame(12, $created['items'][0]['stockUnitsPerPurchaseUnit']);
+            self::assertSame(10, $created['items'][0]['unitCost']);
+            $orderId = $created['id'];
 
-            $client->request('PATCH', '/api/v1/inventory/purchase-orders/'.$orderId, server: ['CONTENT_TYPE' => 'application/json'], content: json_encode([
-                'supplierId' => $supplier->getId()->toRfc4122(),
-                'warehouseId' => $warehouse->getId()->toRfc4122(),
-                'currency' => 'EUR',
-                'note' => 'Edited draft',
-                'items' => [['productId' => $product->getId()->toRfc4122(), 'quantity' => 3]],
-            ], JSON_THROW_ON_ERROR));
-            self::assertSame(200, $client->getResponse()->getStatusCode(), $client->getResponse()->getContent());
-            $edited = json_decode($client->getResponse()->getContent(), true, 512, JSON_THROW_ON_ERROR)['order'];
-            self::assertSame(3.0, $edited['items'][0]['quantity']);
+            $baseOrder['items'][0]['quantity'] = 3;
+            $baseOrder['note'] = 'Edited draft';
+            $editedResponse = $controller->updateOrder($orderId, $this->jsonRequest($baseOrder), $entityManager);
+            self::assertSame(200, $editedResponse->getStatusCode(), $editedResponse->getContent());
+            self::assertEquals(3, $this->payload($editedResponse)['order']['items'][0]['quantity']);
+            self::assertSame(8, $this->payload($editedResponse)['order']['items'][0]['unitCost']);
 
-            $client->request('GET', '/api/v1/inventory/purchase-orders/'.$orderId.'/pdf');
-            self::assertSame(200, $client->getResponse()->getStatusCode(), $client->getResponse()->getContent());
-            self::assertStringStartsWith('%PDF-', $client->getResponse()->getContent());
+            $pdf = $controller->orderPdf($orderId, $entityManager);
+            self::assertSame('application/pdf', $pdf->headers->get('Content-Type'));
+            self::assertStringStartsWith('%PDF-', $pdf->getContent());
 
-            $client->request('POST', '/api/v1/inventory/purchase-orders/'.$orderId.'/send');
-            self::assertSame(200, $client->getResponse()->getStatusCode(), $client->getResponse()->getContent());
-            $sent = json_decode($client->getResponse()->getContent(), true, 512, JSON_THROW_ON_ERROR)['order'];
+            $sentResponse = $controller->sendOrder($orderId, $entityManager);
+            self::assertSame(200, $sentResponse->getStatusCode(), $sentResponse->getContent());
+            $sent = $this->payload($sentResponse)['order'];
             self::assertSame('supplier@example.test', $sent['supplierSnapshot']['email']);
 
-            $receiptKey = Uuid::v7()->toRfc4122();
-            $receiptBody = json_encode([
-                'receiptKey' => $receiptKey,
+            $previousSender = $_ENV['BREVO_FROM'] ?? null;
+            $_ENV['BREVO_FROM'] = 'sender@example.test';
+            try {
+                $mailer = $this->createMock(MailerInterface::class);
+                $mailer->expects(self::once())->method('send');
+                $emailResponse = $controller->emailOrder($orderId, $entityManager, $mailer);
+                self::assertSame(200, $emailResponse->getStatusCode(), $emailResponse->getContent());
+                self::assertSame('supplier@example.test', $this->payload($emailResponse)['order']['lastEmailedTo']);
+            } finally {
+                if ($previousSender === null) {
+                    unset($_ENV['BREVO_FROM']);
+                } else {
+                    $_ENV['BREVO_FROM'] = $previousSender;
+                }
+            }
+
+            $receivedResponse = $controller->receiveOrder($orderId, $this->jsonRequest([
+                'receiptKey' => Uuid::v7()->toRfc4122(),
                 'items' => [[
                     'itemId' => $sent['items'][0]['id'],
                     'goodQuantity' => 1,
                     'damagedQuantity' => 1,
                 ]],
-            ], JSON_THROW_ON_ERROR);
-            $client->request('POST', '/api/v1/inventory/purchase-orders/'.$orderId.'/receive', server: ['CONTENT_TYPE' => 'application/json'], content: $receiptBody);
-            self::assertSame(200, $client->getResponse()->getStatusCode(), $client->getResponse()->getContent());
-            $received = json_decode($client->getResponse()->getContent(), true, 512, JSON_THROW_ON_ERROR)['order'];
-            self::assertSame('partially_received', $received['status']);
+            ]), $entityManager);
+            self::assertSame(200, $receivedResponse->getStatusCode(), $receivedResponse->getContent());
+            self::assertSame('partially_received', $this->payload($receivedResponse)['order']['status']);
 
-            $client->request('GET', '/api/v1/inventory/purchase-orders/'.$orderId);
-            $detail = json_decode($client->getResponse()->getContent(), true, 512, JSON_THROW_ON_ERROR);
+            $detail = $this->payload($controller->order($orderId, $entityManager));
             self::assertCount(1, $detail['receipts']);
             self::assertSame('open', $detail['receipts'][0]['damageResolution']);
+            self::assertSame('held', $detail['receipts'][0]['quarantineStatus']);
+            self::assertSame(12, $detail['receipts'][0]['quarantineQuantity']);
             $receiptId = $detail['receipts'][0]['id'];
 
-            $client->request('PATCH', '/api/v1/inventory/purchase-orders/'.$orderId.'/receipts/'.$receiptId.'/damage', server: ['CONTENT_TYPE' => 'application/json'], content: json_encode([
+            $resolvedResponse = $controller->resolveReceiptDamage($orderId, $receiptId, $this->jsonRequest([
                 'resolution' => 'returned',
                 'note' => 'Supplier collected the damaged case',
-            ], JSON_THROW_ON_ERROR));
-            self::assertSame(200, $client->getResponse()->getStatusCode(), $client->getResponse()->getContent());
-            $resolved = json_decode($client->getResponse()->getContent(), true, 512, JSON_THROW_ON_ERROR)['receipt'];
+            ]), $entityManager);
+            self::assertSame(200, $resolvedResponse->getStatusCode(), $resolvedResponse->getContent());
+            $resolved = $this->payload($resolvedResponse)['receipt'];
             self::assertSame('returned', $resolved['damageResolution']);
             self::assertCount(1, $resolved['damageHistory']);
+
+            $disposedResponse = $controller->disposeReceiptQuarantine($orderId, $receiptId, $this->jsonRequest([
+                'disposition' => 'returned',
+                'note' => 'Supplier collected damaged stock',
+            ]), $entityManager);
+            self::assertSame(200, $disposedResponse->getStatusCode(), $disposedResponse->getContent());
+            self::assertSame('returned', $this->payload($disposedResponse)['receipt']['quarantineStatus']);
         } finally {
             $connection->rollBack();
             $entityManager->clear();
         }
+    }
+
+    private function jsonRequest(array $data): Request
+    {
+        return Request::create(
+            '/',
+            'POST',
+            [],
+            [],
+            [],
+            ['CONTENT_TYPE' => 'application/json'],
+            json_encode($data, JSON_THROW_ON_ERROR),
+        );
+    }
+
+    private function payload(\Symfony\Component\HttpFoundation\JsonResponse $response): array
+    {
+        return json_decode($response->getContent(), true, 512, JSON_THROW_ON_ERROR);
     }
 }

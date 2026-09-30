@@ -151,7 +151,15 @@ const warehouseColumns: TableColumn<Warehouse>[] = [
   {
     accessorKey: 'name',
     header: () => t('inventory.warehouse'),
-    cell: ({ row }) => h('span', { class: 'font-medium text-highlighted' }, row.original.name)
+    cell: ({ row }) =>
+      h(
+        'button',
+        {
+          class: 'cursor-pointer font-medium text-highlighted hover:text-primary',
+          onClick: () => navigateTo(`/inventory/warehouses/${row.original.id}`)
+        },
+        row.original.name
+      )
   },
   { accessorKey: 'code', header: () => t('inventory.code') },
   {

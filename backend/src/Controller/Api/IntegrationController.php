@@ -3,7 +3,10 @@
 namespace App\Controller\Api;
 
 use App\Entity\IntegrationConnection;
+use App\Entity\IntegrationImportRun;
+use App\Entity\IntegrationSalesSyncCursor;
 use App\Entity\IntegrationSecret;
+use App\Entity\SalesOrder;
 use App\Entity\Tenant;
 use App\Entity\TenantMembership;
 use App\Entity\User;
@@ -11,6 +14,7 @@ use App\Integration\AnanasConnectionTester;
 use App\Integration\ConnectorCatalog;
 use App\Integration\SecretCipher;
 use App\Integration\ShopwareConnectionTester;
+use App\Service\InventorySyncOutboxService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -193,12 +197,38 @@ final class IntegrationController extends AbstractController
         ]);
     }
 
+    #[Route('/{id}/sales-sync', methods: ['GET'])]
+    public function salesSyncStatus(string $id, EntityManagerInterface $entityManager): JsonResponse
+    {
+        $connection = $this->connection($id, $entityManager);
+        $cursor = $entityManager->getRepository(IntegrationSalesSyncCursor::class)->findOneBy([
+            'connection' => $connection,
+        ]);
+        $settings = $this->importSettings($connection);
+
+        return $this->json([
+            'enabled' => $settings['salesContinuousSync'],
+            'startedAt' => $settings['salesContinuousStartedAt'],
+            'lastSyncedAt' => $cursor instanceof IntegrationSalesSyncCursor
+                && $cursor->getLastSyncedAt() > $cursor->getStartedAt()
+                    ? $cursor->getLastSyncedAt()->format(\DateTimeInterface::ATOM)
+                    : null,
+            'lastError' => $cursor?->getLastError(),
+            'lastErrorAt' => $cursor?->getLastErrorAt()?->format(\DateTimeInterface::ATOM),
+            'pendingOrders' => $entityManager->getRepository(SalesOrder::class)->count([
+                'connection' => $connection,
+                'status' => 'new',
+            ]),
+        ]);
+    }
+
     #[Route('/{id}/configuration', methods: ['PATCH'])]
     public function updateConfiguration(
         string $id,
         Request $request,
         EntityManagerInterface $entityManager,
         TranslatorInterface $translator,
+        InventorySyncOutboxService $stockOutbox,
     ): JsonResponse {
         $connection = $this->connection($id, $entityManager, true);
         try {
@@ -217,9 +247,80 @@ final class IntegrationController extends AbstractController
         }
 
         $configuration = $connection->getConfiguration();
-        $configuration['importSettings'] = $this->normalizeImportSettings($settings);
-        $connection->updateConfiguration($configuration);
-        $entityManager->flush();
+        $previousSettings = $this->importSettings($connection);
+        $normalizedSettings = $this->normalizeImportSettings($settings);
+        if (
+            $connection->getConnectorKey() !== 'shopware'
+            && ($normalizedSettings['salesContinuousSync'] || $normalizedSettings['stockAuthority'] === 'connect')
+        ) {
+            return $this->json([
+                'message' => $this->message($translator, 'integration.configuration_invalid'),
+            ], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+        if ($normalizedSettings['salesContinuousSync'] && !$normalizedSettings['areas']['salesOrders']) {
+            return $this->json([
+                'message' => $this->message($translator, 'integration.configuration_invalid'),
+            ], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+        if ($normalizedSettings['stockAuthority'] === 'connect' && !$normalizedSettings['salesContinuousSync']) {
+            return $this->json([
+                'message' => $this->message($translator, 'integration.configuration_invalid'),
+            ], Response::HTTP_UNPROCESSABLE_ENTITY);
+        }
+        $activateStockSync = $normalizedSettings['stockAuthority'] === 'connect'
+            && $previousSettings['stockAuthority'] !== 'connect';
+        if ($activateStockSync) {
+            $cursor = $entityManager->getRepository(IntegrationSalesSyncCursor::class)->findOneBy([
+                'connection' => $connection,
+            ]);
+            if (
+                !$previousSettings['salesContinuousSync']
+                || $previousSettings['salesContinuousStartedAt'] === null
+                || !$cursor instanceof IntegrationSalesSyncCursor
+                || $cursor->getStartedAt() != new \DateTimeImmutable($previousSettings['salesContinuousStartedAt'])
+                || $cursor->getLastSyncedAt() <= $cursor->getStartedAt()
+                || $cursor->getLastSyncedAt() < new \DateTimeImmutable('-5 minutes')
+            ) {
+                return $this->json([
+                    'message' => $this->message($translator, 'integration.stock_sync_not_ready'),
+                ], Response::HTTP_UNPROCESSABLE_ENTITY);
+            }
+        }
+        if ($normalizedSettings['salesContinuousSync'] && !$previousSettings['salesContinuousSync']) {
+            $activeRun = $entityManager->getRepository(IntegrationImportRun::class)->findOneBy([
+                'connection' => $connection,
+                'type' => 'sales',
+                'status' => ['queued', 'running'],
+            ]);
+            if ($activeRun instanceof IntegrationImportRun) {
+                return $this->json([
+                    'message' => $this->message($translator, 'integration.import_already_running'),
+                ], Response::HTTP_CONFLICT);
+            }
+        }
+        if (
+            $normalizedSettings['salesContinuousSync']
+            && (!$previousSettings['salesContinuousSync'] || $previousSettings['salesContinuousStartedAt'] === null)
+        ) {
+            $normalizedSettings['salesContinuousStartedAt'] = (new \DateTimeImmutable())->format(\DateTimeInterface::ATOM);
+        } elseif ($normalizedSettings['salesContinuousSync']) {
+            $normalizedSettings['salesContinuousStartedAt'] = $previousSettings['salesContinuousStartedAt'];
+        }
+        $configuration['importSettings'] = $normalizedSettings;
+        $database = $entityManager->getConnection();
+        $database->beginTransaction();
+        try {
+            $connection->updateConfiguration($configuration);
+            $entityManager->flush();
+            if ($activateStockSync) {
+                $stockOutbox->queuePublishedProductsForConnection($connection, $entityManager);
+            }
+            $database->commit();
+        } catch (\Throwable $exception) {
+            $database->rollBack();
+
+            throw $exception;
+        }
 
         return $this->json([
             'message' => $this->message($translator, 'integration.configuration_saved'),
@@ -272,10 +373,14 @@ final class IntegrationController extends AbstractController
     private function importSettings(IntegrationConnection $connection): array
     {
         $settings = $connection->getConfiguration()['importSettings'] ?? [];
-
-        return $this->normalizeImportSettings(
+        $normalized = $this->normalizeImportSettings(
             is_array($settings) ? $settings : [],
         );
+        if ($normalized['salesContinuousStartedAt'] === null) {
+            $normalized['salesContinuousSync'] = false;
+        }
+
+        return $normalized;
     }
 
     /** @param array<string, mixed> $settings @return array{areas: array<string, bool>, productMatchOrder: list<string>} */
@@ -300,6 +405,8 @@ final class IntegrationController extends AbstractController
             'channelPublications' => true,
             'productDownloads' => true,
             'crossSellings' => true,
+            'salesCustomers' => false,
+            'salesOrders' => false,
         ];
         foreach ($defaults as $key => $default) {
             $defaults[$key] = is_bool($areas[$key] ?? null)
@@ -326,6 +433,12 @@ final class IntegrationController extends AbstractController
         return [
             'areas' => $defaults,
             'productMatchOrder' => $matchOrder,
+            'salesHistoryFrom' => is_string($settings['salesHistoryFrom'] ?? null) ? $settings['salesHistoryFrom'] : null,
+            'salesContinuousSync' => is_bool($settings['salesContinuousSync'] ?? null) ? $settings['salesContinuousSync'] : false,
+            'salesContinuousStartedAt' => is_string($settings['salesContinuousStartedAt'] ?? null)
+                ? $settings['salesContinuousStartedAt']
+                : null,
+            'stockAuthority' => ($settings['stockAuthority'] ?? null) === 'connect' ? 'connect' : 'shopware',
         ];
     }
 

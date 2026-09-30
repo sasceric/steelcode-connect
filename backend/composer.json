@@ -6,6 +6,7 @@
     "require": {
         "php": ">=8.2",
         "ext-ctype": "*",
+        "ext-bcmath": "*",
         "ext-iconv": "*",
         "doctrine/doctrine-bundle": "^2.19",
         "doctrine/doctrine-migrations-bundle": "^3.7",
@@ -70,7 +71,7 @@
     "scripts": {
         "imports:consume": [
             "Composer\\Config::disableProcessTimeout",
-            "APP_DEBUG=0 php bin/console messenger:consume async --no-debug --memory-limit=256M -vv"
+            "APP_DEBUG=0 php bin/console messenger:consume scheduler_default async --no-debug --memory-limit=256M -vv"
         ],
         "auto-scripts": {
             "cache:clear": "symfony-cmd",

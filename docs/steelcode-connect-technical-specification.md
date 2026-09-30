@@ -148,6 +148,34 @@ Obavezna ograničenja uključuju jedinstvenost `(tenant_id, connection_id, exter
 - Vanjski connectori koriste provider-specifični OAuth2/client credentials ili API ključ. Rotacija tajni i audit izmjena su obavezni.
 - Role za MVP: `owner`, `admin`, `operator`, `viewer`.
 
+### Strategija rasta: pooled, shard i dedicated tenant
+
+Početni i podrazumijevani model je **pooled SaaS**: svi tenant-i koriste istu
+aplikaciju i PostgreSQL klaster, ali nikada ne dijele poslovne podatke. Tenant
+je firma koja koristi SteelCode Connect; njeni korisnici, dobavljači,
+skladišta, proizvodi, kanali i integracije pripadaju samo tom tenant-u.
+
+Ovo nije odluka da se svakom kupcu trajno daje zasebna instalacija. Zasebna
+instanca ili shard je operativna opcija za veliki/regulisani enterprise tenant,
+ne druga poslovna implementacija sistema. Da bi taj prelaz kasnije bio siguran:
+
+- Svaka tabela poslovnog domena, API upit, servis i Messenger poruka nosi ili
+  eksplicitno provjerava `tenant_id`.
+- Storage ključevi, cache ključevi, queue poruke, rate-limitovi, webhookovi,
+  logovi i audit zapisi sadrže tenant kontekst.
+- `TenantContext` se postavlja na HTTP, CLI i worker granici. Worker ne smije
+  obraditi poruku bez tenant identiteta.
+- Postoji centralni zapis o tenant routingu. U MVP-u svi zapisi pokazuju na
+  isti pooled data plane; kasnije pojedini tenant može biti usmjeren na drugi
+  shard, rezervisane workere ili dedicated instance bez promjene kataloga,
+  skladišta ili sync poslovnih pravila.
+- Teški importi i syncovi imaju tenant-scoped lockove, kvote i redove kako
+  jedan tenant ne bi degradirao iskustvo drugih.
+
+Ovo pravilo je arhitektonska obaveza za svaki novi modul. Ne uvoditi
+mikroservise, database-per-tenant ili zaseban deploy po kupcu prije mjerljive
+potrebe, ugovorne obaveze ili izolacijskog zahtjeva.
+
 ## 8. Sync engine
 
 Sync run je trajna poslovna evidencija, a Messenger poruke su izvršni mehanizam. Statusi: `created → queued → running → partially_completed|completed|failed|cancelled`.

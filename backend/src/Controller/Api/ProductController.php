@@ -34,6 +34,7 @@ use App\Entity\TenantMembership;
 use App\Entity\User;
 use App\Service\SeoUrlService;
 use Doctrine\ORM\EntityManagerInterface;
+use Doctrine\DBAL\LockMode;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
 use Symfony\Component\HttpFoundation\File\UploadedFile;
@@ -58,6 +59,7 @@ final class ProductController extends AbstractController
     {
         $tenant = $this->tenant($entityManager);
         $optionsOnly = $request->query->get('view') === 'options';
+        $includeVariants = $optionsOnly && $request->query->getBoolean('includeVariants');
         $requestedIds = array_filter(
             explode(',', (string) $request->query->get('ids', '')),
             static fn (string $id): bool => Uuid::isValid($id),
@@ -97,6 +99,7 @@ final class ProductController extends AbstractController
         $limit = $request->query->getInt('limit');
         $page = max(1, $request->query->getInt('page', 1));
         $search = trim((string) $request->query->get('search', ''));
+        $includeSearchVariants = !$optionsOnly && $search !== '';
         $status = (string) $request->query->get('status', '');
         $categoryId = (string) $request->query->get('categoryId', '');
         $manufacturerId = (string) $request->query->get('manufacturerId', '');
@@ -104,14 +107,16 @@ final class ProductController extends AbstractController
         $direction = strtoupper((string) $request->query->get('direction', 'DESC')) === 'ASC'
             ? 'ASC'
             : 'DESC';
-        $criteria = ['tenant' => $tenant, 'parent' => null];
         $queryBuilder = $entityManager->createQueryBuilder()
             ->select('product')
             ->from(Product::class, 'product');
         $queryBuilder
             ->where('product.tenant = :tenant')
-            ->andWhere('product.parent IS NULL')
             ->setParameter('tenant', $tenant);
+
+        if (!$includeVariants && !$includeSearchVariants) {
+            $queryBuilder->andWhere('product.parent IS NULL');
+        }
 
         if (Uuid::isValid($categoryId)) {
             $queryBuilder
@@ -140,6 +145,9 @@ final class ProductController extends AbstractController
                     'LOWER(product.sku) LIKE :search OR EXISTS ('
                     .'SELECT 1 FROM '.ProductTranslation::class.' searchTranslation '
                     .'WHERE searchTranslation.product = product AND LOWER(searchTranslation.name) LIKE :search'
+                    .') OR EXISTS ('
+                    .'SELECT 1 FROM '.ProductTranslation::class.' parentSearchTranslation '
+                    .'WHERE parentSearchTranslation.product = product.parent AND LOWER(parentSearchTranslation.name) LIKE :search'
                     .')'
                 )
                 ->setParameter('search', '%'.mb_strtolower($search).'%');
@@ -179,6 +187,11 @@ final class ProductController extends AbstractController
                 ->setFirstResult(($page - 1) * $pageSize);
         }
 
+        if ($optionsOnly) {
+            $queryBuilder
+                ->addSelect('optionUnit')
+                ->leftJoin('product.unit', 'optionUnit');
+        }
         $products = $queryBuilder->getQuery()->getResult();
         if ($optionsOnly) {
             $response = [
@@ -186,7 +199,7 @@ final class ProductController extends AbstractController
             ];
 
             if ($limit > 0) {
-                $total = $this->productListTotal($tenant, $search, $status, $categoryId, $manufacturerId);
+                $total = $this->productListTotal($tenant, $search, $status, $categoryId, $manufacturerId, $includeVariants);
                 $response['pagination'] = [
                     'page' => $page,
                     'limit' => $pageSize,
@@ -214,7 +227,14 @@ final class ProductController extends AbstractController
         ];
 
         if ($limit > 0) {
-            $total = $this->productListTotal($tenant, $search, $status, $categoryId, $manufacturerId);
+            $total = $this->productListTotal(
+                $tenant,
+                $search,
+                $status,
+                $categoryId,
+                $manufacturerId,
+                $includeSearchVariants,
+            );
             $response['pagination'] = [
                 'page' => $page,
                 'limit' => $pageSize,
@@ -239,13 +259,39 @@ final class ProductController extends AbstractController
             return $this->json(['message' => $this->message($translator, 'product.name_required')], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
 
-        $product = new Product($tenant);
-        $translation = $this->newDefaultTranslation($product, $name);
-        $entityManager->persist($product);
-        $entityManager->persist($translation);
-        $entityManager->flush();
+        $entityManager->beginTransaction();
+        try {
+            $lockedTenant = $entityManager->find(
+                Tenant::class,
+                $tenant->getId(),
+                LockMode::PESSIMISTIC_WRITE,
+            );
+            if (!$lockedTenant instanceof Tenant) {
+                throw $this->createNotFoundException();
+            }
+
+            $product = new Product($lockedTenant);
+            $product->updateSku((string) $lockedTenant->claimNextProductNumber());
+            $translation = $this->newDefaultTranslation($product, $name);
+            $entityManager->persist($product);
+            $entityManager->persist($translation);
+            $entityManager->flush();
+            $entityManager->commit();
+        } catch (\Throwable $exception) {
+            $entityManager->rollback();
+
+            throw $exception;
+        }
 
         return $this->json(['product' => $this->payload($product)], Response::HTTP_CREATED);
+    }
+
+    #[Route('/next-number', methods: ['GET'], priority: 10)]
+    public function nextProductNumber(EntityManagerInterface $entityManager): JsonResponse
+    {
+        return $this->json([
+            'productNumber' => (string) $this->tenant($entityManager)->getNextProductNumber(),
+        ]);
     }
 
     #[Route('', methods: ['DELETE'])]
@@ -1705,14 +1751,18 @@ return null;
         string $status,
         string $categoryId = '',
         string $manufacturerId = '',
+        bool $includeVariants = false,
     ): int
     {
         $queryBuilder = $this->entityManager->createQueryBuilder()
             ->select('COUNT(DISTINCT product.id)')
             ->from(Product::class, 'product')
             ->where('product.tenant = :tenant')
-            ->andWhere('product.parent IS NULL')
             ->setParameter('tenant', $tenant);
+
+        if (!$includeVariants) {
+            $queryBuilder->andWhere('product.parent IS NULL');
+        }
 
         if (Uuid::isValid($categoryId)) {
             $queryBuilder
@@ -1741,6 +1791,9 @@ return null;
                     'LOWER(product.sku) LIKE :search OR EXISTS ('
                     .'SELECT 1 FROM '.ProductTranslation::class.' searchTranslation '
                     .'WHERE searchTranslation.product = product AND LOWER(searchTranslation.name) LIKE :search'
+                    .') OR EXISTS ('
+                    .'SELECT 1 FROM '.ProductTranslation::class.' parentSearchTranslation '
+                    .'WHERE parentSearchTranslation.product = product.parent AND LOWER(parentSearchTranslation.name) LIKE :search'
                     .')'
                 )
                 ->setParameter('search', '%'.mb_strtolower($search).'%');
@@ -1793,7 +1846,7 @@ return null;
     /**
      * @param list<Product> $products
      *
-     * @return list<array{id: string, name: string, sku: ?string}>
+     * @return list<array{id: string, name: string, sku: ?string, unitCode: ?string, variantCombination: ?string}>
      */
     private function optionPayloads(array $products, Tenant $tenant): array
     {
@@ -1802,22 +1855,81 @@ return null;
         }
 
         $locale = $this->defaultLocale($tenant, $this->entityManager);
+        $translationProducts = $products;
+        foreach ($products as $product) {
+            if ($product->getParent() instanceof Product) {
+                $translationProducts[] = $product->getParent();
+            }
+        }
         $namesByProductId = [];
         foreach ($this->entityManager->getRepository(ProductTranslation::class)->findBy([
-            'product' => $products,
+            'product' => $translationProducts,
             'locale' => $locale,
         ]) as $translation) {
             $namesByProductId[$translation->getProduct()->getId()->toRfc4122()] = $translation->getName();
         }
+        $optionValueLabels = $this->optionValueLabels($products);
 
         return array_map(
-            static fn (Product $product): array => [
-                'id' => $product->getId()->toRfc4122(),
-                'name' => $namesByProductId[$product->getId()->toRfc4122()] ?? '',
-                'sku' => $product->getSku(),
-            ],
+            static function (Product $product) use ($namesByProductId, $optionValueLabels): array {
+                $productId = $product->getId()->toRfc4122();
+                $parent = $product->getParent();
+                $name = $namesByProductId[$productId] ?? '';
+                $variantCombination = null;
+
+                if ($parent instanceof Product) {
+                    $name = $namesByProductId[$parent->getId()->toRfc4122()] ?? $name;
+                    $values = array_values($product->getOptionValues());
+                    $values = array_values(array_filter($values, static fn (mixed $value): bool => is_scalar($value) && (string) $value !== ''));
+                    $variantCombination = $values === [] ? null : implode(' / ', array_map(
+                        static fn (mixed $value): string => $optionValueLabels[(string) $value] ?? (string) $value,
+                        $values,
+                    ));
+                }
+
+                return [
+                    'id' => $productId,
+                    'name' => $name,
+                    'sku' => $product->getSku(),
+                    'unitCode' => $product->getUnit()?->getCode(),
+                    'variantCombination' => $variantCombination,
+                ];
+            },
             $products,
         );
+    }
+
+    /**
+     * @param list<Product> $products
+     *
+     * @return array<string, string>
+     */
+    private function optionValueLabels(array $products): array
+    {
+        $ids = [];
+        foreach ($products as $product) {
+            if (!$product->getParent() instanceof Product) {
+                continue;
+            }
+            foreach (array_values($product->getOptionValues()) as $value) {
+                if (is_scalar($value) && Uuid::isValid((string) $value)) {
+                    $ids[(string) $value] = Uuid::fromString((string) $value);
+                }
+            }
+        }
+        if ($ids === []) {
+            return [];
+        }
+
+        $labels = [];
+        foreach ($this->entityManager->getRepository(Property::class)->findBy(['id' => array_values($ids)]) as $property) {
+            $labels[$property->getId()->toRfc4122()] = $property->getName();
+        }
+        foreach ($this->entityManager->getRepository(ProductOptionValue::class)->findBy(['id' => array_values($ids)]) as $optionValue) {
+            $labels[$optionValue->getId()->toRfc4122()] = $optionValue->getValue();
+        }
+
+        return $labels;
     }
 
     private function payload(Product $product): array

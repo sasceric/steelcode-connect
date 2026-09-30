@@ -3,7 +3,10 @@
 namespace App\Controller\Api;
 
 use App\Entity\Product;
+use App\Entity\Currency;
+use App\Entity\ProductOptionValue;
 use App\Entity\ProductTranslation;
+use App\Entity\Property;
 use App\Entity\Locale;
 use App\Entity\PurchaseOrder;
 use App\Entity\PurchaseOrderItem;
@@ -11,9 +14,11 @@ use App\Entity\PurchaseReceipt;
 use App\Entity\Address;
 use App\Entity\Supplier;
 use App\Entity\SupplierOffer;
+use App\Entity\SupplierOfferPrice;
 use App\Entity\Tenant;
 use App\Entity\TenantMembership;
 use App\Entity\User;
+use App\Entity\Unit;
 use App\Entity\Warehouse;
 use App\Service\InventoryService;
 use Doctrine\DBAL\LockMode;
@@ -33,7 +38,10 @@ use Symfony\Component\Mime\Email;
 #[Route('/api/v1/inventory')]
 final class PurchasingController extends AbstractController
 {
-    public function __construct(private readonly InventoryService $inventory)
+    public function __construct(
+        private readonly InventoryService $inventory,
+        private readonly EntityManagerInterface $entityManager,
+    )
     {
     }
 
@@ -58,7 +66,7 @@ final class PurchasingController extends AbstractController
         $supplierId = (string) $request->query->get('supplierId', '');
         $activeOnly = $request->query->getBoolean('active', false);
         if ($activeOnly) {
-            $validity = 'offer.active = true AND (offer.validFrom IS NULL OR offer.validFrom <= :today) AND (offer.validUntil IS NULL OR offer.validUntil >= :today)';
+            $validity = 'offer.active = true AND EXISTS (SELECT 1 FROM '.SupplierOfferPrice::class.' currentPrice WHERE currentPrice.supplierOffer = offer AND (currentPrice.validFrom IS NULL OR currentPrice.validFrom <= :today) AND (currentPrice.validUntil IS NULL OR currentPrice.validUntil >= :today))';
             $query->andWhere($validity)->setParameter('today', new \DateTimeImmutable('today'));
             $countQuery->andWhere($validity)->setParameter('today', new \DateTimeImmutable('today'));
         }
@@ -82,6 +90,7 @@ final class PurchasingController extends AbstractController
             ->setMaxResults($limit)
             ->getQuery()
             ->getResult();
+        $this->loadOfferPrices($offers, $entityManager);
         $names = $this->productNames(
             array_map(fn (SupplierOffer $offer) => $offer->getProduct(), $offers),
             $tenant,
@@ -119,7 +128,7 @@ final class PurchasingController extends AbstractController
             return $this->problem('An offer for this supplier and product already exists.', Response::HTTP_CONFLICT);
         }
         $offer = new SupplierOffer($tenant, $supplier, $product);
-        $error = $this->updateOfferValues($offer, $data);
+        $error = $this->updateOfferValues($offer, $data, $tenant, $entityManager);
         if ($error !== null) {
             return $this->problem($error);
         }
@@ -150,7 +159,7 @@ final class PurchasingController extends AbstractController
         $tenant = $this->tenant($entityManager, true);
         $offer = $this->findOffer($id, $tenant, $entityManager);
         $data = $request->toArray();
-        $error = $this->updateOfferValues($offer, $data);
+        $error = $this->updateOfferValues($offer, $data, $tenant, $entityManager);
         if ($error !== null) {
             return $this->problem($error);
         }
@@ -284,36 +293,72 @@ final class PurchasingController extends AbstractController
         Tenant $tenant,
         EntityManagerInterface $entityManager,
     ): void {
+        $productIds = [];
         $seen = [];
         foreach ($items as $line) {
             if (!is_array($line) || !$this->validDecimal($line['quantity'] ?? null, false)) {
                 throw new \DomainException('Every line needs a positive quantity.');
             }
-            $product = $this->findProduct((string) ($line['productId'] ?? ''), $tenant, $entityManager);
-            $productId = $product->getId()->toRfc4122();
+            $productId = (string) ($line['productId'] ?? '');
+            if (!Uuid::isValid($productId)) {
+                throw new \DomainException('Choose a valid product for every purchase order line.');
+            }
+            $productId = Uuid::fromString($productId)->toRfc4122();
             if (isset($seen[$productId])) {
                 throw new \DomainException('A product may appear only once in a purchase order.');
             }
             $seen[$productId] = true;
-            $offer = $entityManager->getRepository(SupplierOffer::class)->findOneBy([
-                'tenant' => $tenant,
-                'supplier' => $supplier,
-                'product' => $product,
-                'active' => true,
-            ]);
-            if (!$offer instanceof SupplierOffer || $offer->getCurrency() !== $currency || !$offer->isCurrentlyValid()) {
+            $productIds[] = Uuid::fromString($productId);
+        }
+        $products = [];
+        foreach ($entityManager->getRepository(Product::class)->findBy(['id' => $productIds, 'tenant' => $tenant]) as $product) {
+            $products[$product->getId()->toRfc4122()] = $product;
+        }
+        if (count($products) !== count($productIds)) {
+            throw new \DomainException('Choose products from the current business.');
+        }
+        $offers = $entityManager->createQueryBuilder()
+            ->select('offer', 'price')
+            ->from(SupplierOffer::class, 'offer')
+            ->leftJoin('offer.prices', 'price')
+            ->where('offer.tenant = :tenant')
+            ->andWhere('offer.supplier = :supplier')
+            ->andWhere('offer.product IN (:products)')
+            ->andWhere('offer.active = true')
+            ->setParameter('tenant', $tenant)
+            ->setParameter('supplier', $supplier)
+            ->setParameter('products', array_values($products))
+            ->getQuery()
+            ->getResult();
+        $offersByProduct = [];
+        foreach ($offers as $offer) {
+            $offersByProduct[$offer->getProduct()->getId()->toRfc4122()] = $offer;
+        }
+        foreach ($items as $line) {
+            $productId = Uuid::fromString((string) $line['productId'])->toRfc4122();
+            $product = $products[$productId];
+            $offer = $offersByProduct[$productId] ?? null;
+            if (!$offer instanceof SupplierOffer) {
                 throw new \DomainException('Every ordered product needs a currently valid active offer in the order currency.');
             }
-            if ((float) $line['quantity'] < (float) $offer->getMinimumQuantity()) {
+            if ((float) $line['quantity'] < (float) $offer->getMinimumOrderQuantity()) {
                 throw new \DomainException('An ordered quantity is below the supplier minimum.');
             }
-            if ((float) $line['quantity'] * $offer->getStockUnitsPerPurchaseUnit() >= 1000000000000000) {
+            $price = $offer->priceFor($this->decimal($line['quantity']), $currency);
+            if (!$price instanceof SupplierOfferPrice) {
+                throw new \DomainException('No valid supplier price tier covers this quantity and currency.');
+            }
+            $stockQuantity = bcmul($this->decimal($line['quantity']), $offer->getStockUnitsPerPurchaseUnit(), 8);
+            if (bccomp($stockQuantity, '1000000000000000', 8) >= 0) {
                 throw new \DomainException('The converted stock quantity exceeds the supported range.');
+            }
+            if (bccomp($stockQuantity, bcadd($stockQuantity, '0', 4), 8) !== 0) {
+                throw new \DomainException('The converted stock quantity needs more than four decimal places. Change the quantity or unit conversion.');
             }
             $order->addItem(
                 $product,
                 $this->decimal($line['quantity']),
-                $offer->getUnitCost(),
+                $price->getUnitCost(),
                 $offer->getSupplierSku(),
                 $offer->getPurchaseUnit(),
                 $offer->getStockUnitsPerPurchaseUnit(),
@@ -346,6 +391,8 @@ final class PurchasingController extends AbstractController
                     'damageResolutionNote' => $receipt->getDamageResolutionNote(),
                     'damageResolvedAt' => $receipt->getDamageResolvedAt()?->format(DATE_ATOM),
                     'damageHistory' => $receipt->getDamageHistory(),
+                    'quarantineQuantity' => (float) $receipt->getQuarantineQuantity(),
+                    'quarantineStatus' => $receipt->getQuarantineStatus(),
                     'createdAt' => $receipt->getCreatedAt()->format(DATE_ATOM),
                 ],
                 $receipts,
@@ -373,7 +420,7 @@ final class PurchasingController extends AbstractController
             'isDefault' => true,
         ]);
         $escape = static fn (mixed $value): string => htmlspecialchars((string) ($value ?? ''), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-        $reference = 'PO-'.$order->getCreatedAt()->format('Ymd').'-'.strtoupper(substr(str_replace('-', '', $order->getId()->toRfc4122()), -8));
+        $reference = $order->getReference();
         $supplierLines = array_filter([
             $destination['name'] ?? null,
             $destination['contactName'] ?? null,
@@ -397,7 +444,7 @@ final class PurchasingController extends AbstractController
             $lineTotal = (float) $item->getQuantity() * (float) $item->getUnitCost();
             $total += $lineTotal;
             $productId = $item->getProduct()->getId()->toRfc4122();
-            $rows .= '<tr><td>'.$escape($names[$productId] ?? $item->getProduct()->getSku()).'<br><small>'.$escape($item->getProduct()->getSku()).'</small></td>';
+            $rows .= '<tr><td>'.$escape($names[$productId] ?? $item->getProduct()->getSku() ?? $productId).'<br><small>'.$escape($item->getProduct()->getSku()).'</small></td>';
             $rows .= '<td>'.$escape($item->getSupplierSku()).'</td><td class="number">'.$escape($item->getQuantity()).' '.$escape($item->getPurchaseUnit()).'</td>';
             $rows .= '<td class="number">'.$escape($item->getStockUnitsPerPurchaseUnit()).'</td><td class="number">'.number_format((float) $item->getUnitCost(), 2).' '.$escape($order->getCurrency()).'</td>';
             $rows .= '<td class="number">'.number_format($lineTotal, 2).' '.$escape($order->getCurrency()).'</td></tr>';
@@ -464,6 +511,80 @@ final class PurchasingController extends AbstractController
         ]]);
     }
 
+    #[Route('/purchase-orders/{id}/receipts/{receiptId}/quarantine', methods: ['POST'])]
+    public function disposeReceiptQuarantine(
+        string $id,
+        string $receiptId,
+        Request $request,
+        EntityManagerInterface $entityManager,
+    ): JsonResponse {
+        $tenant = $this->tenant($entityManager, true);
+        $order = $this->findOrder($id, $tenant, $entityManager);
+        $receipt = Uuid::isValid($receiptId)
+            ? $entityManager->getRepository(PurchaseReceipt::class)->findOneBy([
+                'id' => Uuid::fromString($receiptId),
+                'purchaseOrder' => $order,
+            ])
+            : null;
+        if (!$receipt instanceof PurchaseReceipt) {
+            throw $this->createNotFoundException();
+        }
+        $data = $request->toArray();
+        $disposition = (string) ($data['disposition'] ?? '');
+        $note = $this->nullable($data['note'] ?? null);
+        $connection = $entityManager->getConnection();
+        $connection->beginTransaction();
+        try {
+            $entityManager->lock($receipt, LockMode::PESSIMISTIC_WRITE);
+            $entityManager->refresh($receipt);
+            if ($receipt->getQuarantineStatus() === $disposition) {
+                $connection->commit();
+
+                return $this->json(['receipt' => [
+                    'id' => $receipt->getId()->toRfc4122(),
+                    'quarantineStatus' => $receipt->getQuarantineStatus(),
+                ]]);
+            }
+            if ($receipt->getQuarantineStatus() !== 'held') {
+                throw new \DomainException('This receipt has no physically held damaged goods to dispose.');
+            }
+            $item = $receipt->getItem();
+            $this->inventory->lockProduct($tenant, $order->getWarehouse(), $item->getProduct(), $entityManager);
+            $this->inventory->disposeQuarantine(
+                $tenant,
+                $order->getWarehouse(),
+                $item->getProduct(),
+                $receipt->getQuarantineQuantity(),
+                $disposition,
+                $this->getUser() instanceof User ? $this->getUser() : null,
+                $receipt->getId()->toRfc4122(),
+                $note,
+                $entityManager,
+            );
+            $receipt->resolveQuarantine(
+                $disposition,
+                $note,
+                $this->getUser() instanceof User ? $this->getUser() : null,
+            );
+            $entityManager->flush();
+            $connection->commit();
+        } catch (\DomainException $exception) {
+            $connection->rollBack();
+
+            return $this->problem($exception->getMessage(), Response::HTTP_CONFLICT);
+        } catch (\Throwable $exception) {
+            $connection->rollBack();
+            throw $exception;
+        }
+
+        return $this->json(['receipt' => [
+            'id' => $receipt->getId()->toRfc4122(),
+            'quarantineStatus' => $receipt->getQuarantineStatus(),
+            'quarantineQuantity' => (float) $receipt->getQuarantineQuantity(),
+            'damageHistory' => $receipt->getDamageHistory(),
+        ]]);
+    }
+
     #[Route('/purchase-orders/{id}/send', methods: ['POST'])]
     public function sendOrder(string $id, EntityManagerInterface $entityManager): JsonResponse
     {
@@ -486,7 +607,7 @@ final class PurchasingController extends AbstractController
         if (!filter_var($recipient, FILTER_VALIDATE_EMAIL) || !filter_var($sender, FILTER_VALIDATE_EMAIL)) {
             return $this->problem('A valid supplier email and configured sender address are required.');
         }
-        $reference = 'PO-'.$order->getCreatedAt()->format('Ymd').'-'.strtoupper(substr(str_replace('-', '', $order->getId()->toRfc4122()), -8));
+        $reference = $order->getReference();
         $pdf = $this->orderPdf($id, $entityManager)->getContent();
         $email = (new Email())
             ->from($sender)
@@ -652,6 +773,7 @@ final class PurchasingController extends AbstractController
                 $damaged,
                 $this->getUser() instanceof User ? $this->getUser() : null,
                 $this->nullable($data['note'] ?? null),
+                $item->toStockQuantity($damaged),
             ));
         }
     }
@@ -684,41 +806,162 @@ final class PurchasingController extends AbstractController
         }
     }
 
-    private function updateOfferValues(SupplierOffer $offer, array $data): ?string
+    #[Route('/supplier-offers/batch', methods: ['POST'], priority: 10)]
+    public function createOfferBatch(Request $request, EntityManagerInterface $entityManager): JsonResponse
+    {
+        $tenant = $this->tenant($entityManager, true);
+        $data = $request->toArray();
+        $supplier = $this->findSupplier((string) ($data['supplierId'] ?? ''), $tenant, $entityManager);
+        $rows = $data['offers'] ?? null;
+        if (!$supplier->isActive() || !is_array($rows) || $rows === [] || count($rows) > 100) {
+            return $this->problem('Choose an active supplier and 1–100 offer items.');
+        }
+        $offers = [];
+        $seen = [];
+        foreach ($rows as $row) {
+            if (!is_array($row)) {
+                return $this->problem('Invalid offer item.');
+            }
+            $product = $this->findProduct((string) ($row['productId'] ?? ''), $tenant, $entityManager);
+            $productId = $product->getId()->toRfc4122();
+            if (isset($seen[$productId]) || $entityManager->getRepository(SupplierOffer::class)->findOneBy([
+                'tenant' => $tenant,
+                'supplier' => $supplier,
+                'product' => $product,
+            ]) instanceof SupplierOffer) {
+                return $this->problem('Each product can have only one offer per supplier.', Response::HTTP_CONFLICT);
+            }
+            $seen[$productId] = true;
+            $offer = new SupplierOffer($tenant, $supplier, $product);
+            $error = $this->updateOfferValues($offer, $row, $tenant, $entityManager);
+            if ($error !== null) {
+                return $this->problem($error);
+            }
+            $offers[] = $offer;
+        }
+        $connection = $entityManager->getConnection();
+        $connection->beginTransaction();
+        try {
+            foreach ($offers as $offer) {
+                if ($offer->isActive() && $offer->isPreferred()) {
+                    $this->clearOtherPreferredOffers($offer, $tenant, $entityManager);
+                }
+                $entityManager->persist($offer);
+            }
+            $entityManager->flush();
+            $connection->commit();
+        } catch (UniqueConstraintViolationException $exception) {
+            $connection->rollBack();
+
+            return $this->problem('An offer for one of these products already exists.', Response::HTTP_CONFLICT);
+        } catch (\Throwable $exception) {
+            $connection->rollBack();
+            throw $exception;
+        }
+
+        return $this->json(['offers' => array_map($this->offerPayload(...), $offers)], Response::HTTP_CREATED);
+    }
+
+    private function updateOfferValues(SupplierOffer $offer, array $data, Tenant $tenant, EntityManagerInterface $entityManager): ?string
     {
         $unitCost = $data['unitCost'] ?? $offer->getUnitCost();
-        $minimum = $data['minimumQuantity'] ?? $offer->getMinimumQuantity();
-        $currency = strtoupper(trim((string) ($data['currency'] ?? $offer->getCurrency())));
+        $minimum = $data['minimumOrderQuantity'] ?? $data['minimumQuantity'] ?? $offer->getMinimumOrderQuantity();
+        $currency = strtoupper(trim((string) ($data['preferredCurrency'] ?? $data['currency'] ?? $offer->getCurrency())));
         $leadDays = $data['leadTimeDays'] ?? $offer->getLeadTimeDays();
         $purchaseUnit = trim((string) ($data['purchaseUnit'] ?? $offer->getPurchaseUnit()));
         $stockUnitsPerPurchaseUnit = $data['stockUnitsPerPurchaseUnit'] ?? $offer->getStockUnitsPerPurchaseUnit();
         $validFromInput = array_key_exists('validFrom', $data) ? $data['validFrom'] : $offer->getValidFrom()?->format('Y-m-d');
         $validUntilInput = array_key_exists('validUntil', $data) ? $data['validUntil'] : $offer->getValidUntil()?->format('Y-m-d');
-        if (!$this->validDecimal($unitCost, true) || !$this->validDecimal($minimum, false) || !preg_match('/^[A-Z]{3}$/', $currency)) {
-            return 'Enter a non-negative cost, positive minimum quantity, and three-letter currency.';
+        if (!$this->validDecimal($minimum, false)
+            || !preg_match('/^[A-Z]{3}$/', $currency)
+            || !$entityManager->getRepository(Currency::class)->findOneBy(['code' => $currency])) {
+            return 'Enter a positive supplier minimum order quantity and a configured currency.';
         }
         if ($leadDays !== null && (!ctype_digit((string) $leadDays) || (int) $leadDays > 36500)) {
             return 'Lead time must be a non-negative number of days.';
         }
-        if ($purchaseUnit === '' || mb_strlen($purchaseUnit) > 64 || !ctype_digit((string) $stockUnitsPerPurchaseUnit) || (int) $stockUnitsPerPurchaseUnit < 1 || (int) $stockUnitsPerPurchaseUnit > 1000000) {
-            return 'Enter a purchase unit and a stock-unit conversion between 1 and 1000000.';
+        $configuredUnit = $entityManager->getRepository(Unit::class)->findOneBy([
+            'tenant' => $tenant,
+            'code' => $purchaseUnit,
+            'active' => true,
+        ]);
+        $unchangedLegacyUnit = $entityManager->contains($offer) && $purchaseUnit === $offer->getPurchaseUnit();
+        if ($purchaseUnit === '' || mb_strlen($purchaseUnit) > 64 || !$this->validDecimal($stockUnitsPerPurchaseUnit, false) || (float) $stockUnitsPerPurchaseUnit > 1000000
+            || (!$configuredUnit instanceof Unit && !$unchangedLegacyUnit)) {
+            return 'Choose a configured purchase unit and a positive stock-unit conversion of at most 1000000.';
         }
         $validFrom = $this->parseDate($validFromInput);
         $validUntil = $this->parseDate($validUntilInput);
         if ($validFrom === false || $validUntil === false || ($validFrom !== null && $validUntil !== null && $validFrom > $validUntil)) {
             return 'Enter a valid offer date range.';
         }
+        $pricesInput = $data['prices'] ?? null;
+        if ($pricesInput !== null && (!is_array($pricesInput) || count($pricesInput) > 50)) {
+            return 'Provide at most 50 supplier price tiers.';
+        }
+        if ($pricesInput === null) {
+            $pricesInput = $this->validDecimal($unitCost, true) ? [[
+                'minimumQuantity' => 1,
+                'unitCost' => $unitCost,
+                'currency' => $currency,
+                'validFrom' => $validFromInput,
+                'validUntil' => $validUntilInput,
+            ]] : [];
+        }
+        $prices = [];
+        foreach ($pricesInput as $row) {
+            if (!is_array($row)
+                || !$this->validDecimal($row['minimumQuantity'] ?? null, false)
+                || !$this->validDecimal($row['unitCost'] ?? null, true)) {
+                return 'Each price tier needs a positive break quantity and a non-negative cost.';
+            }
+            $priceCurrency = strtoupper(trim((string) ($row['currency'] ?? '')));
+            if (!preg_match('/^[A-Z]{3}$/', $priceCurrency)
+                || !$entityManager->getRepository(Currency::class)->findOneBy(['code' => $priceCurrency])) {
+                return 'Choose a configured currency for every price tier.';
+            }
+            $priceFrom = $this->parseDate($row['validFrom'] ?? null);
+            $priceUntil = $this->parseDate($row['validUntil'] ?? null);
+            if ($priceFrom === false || $priceUntil === false
+                || ($priceFrom !== null && $priceUntil !== null && $priceFrom > $priceUntil)) {
+                return 'Enter a valid date range for every price tier.';
+            }
+            foreach ($prices as $existingPrice) {
+                $overlaps = ($existingPrice->getValidUntil() === null || $priceFrom === null || $existingPrice->getValidUntil() >= $priceFrom)
+                    && ($priceUntil === null || $existingPrice->getValidFrom() === null || $priceUntil >= $existingPrice->getValidFrom());
+                if ($existingPrice->getCurrency() === $priceCurrency
+                    && $existingPrice->getMinimumQuantity() === $this->decimal($row['minimumQuantity'])
+                    && $overlaps) {
+                    return 'Price tiers with the same currency and break quantity may not overlap in time.';
+                }
+            }
+            $prices[] = new SupplierOfferPrice(
+                $offer,
+                $this->decimal($row['minimumQuantity']),
+                $this->decimal($row['unitCost']),
+                $priceCurrency,
+                $priceFrom,
+                $priceUntil,
+            );
+        }
+        $defaultPrice = $prices[0] ?? null;
+        if (!$entityManager->contains($offer) && !isset($data['preferredCurrency']) && !isset($data['currency'])
+            && $defaultPrice instanceof SupplierOfferPrice) {
+            $currency = $defaultPrice->getCurrency();
+        }
         $offer->update(
             $this->nullable($data['supplierSku'] ?? $offer->getSupplierSku()),
-            $this->decimal($unitCost),
+            $defaultPrice?->getUnitCost() ?? '0.0000',
             $currency,
             $this->decimal($minimum),
             $leadDays === null ? null : (int) $leadDays,
             (bool) ($data['preferred'] ?? $offer->isPreferred()),
             (bool) ($data['active'] ?? $offer->isActive()),
         );
-        $offer->setPurchaseUnit($purchaseUnit, (int) $stockUnitsPerPurchaseUnit);
+        $offer->setMinimumOrderQuantity($this->decimal($minimum));
+        $offer->setPurchaseUnit($purchaseUnit, $this->decimal($stockUnitsPerPurchaseUnit));
         $offer->setValidity($validFrom, $validUntil);
+        $offer->replacePrices($prices);
 
         return null;
     }
@@ -737,6 +980,17 @@ final class PurchasingController extends AbstractController
 
     private function offerPayload(SupplierOffer $offer, ?string $productName = null): array
     {
+        $prices = $offer->getPrices()->toArray();
+        $today = new \DateTimeImmutable('today');
+        usort($prices, static fn (SupplierOfferPrice $a, SupplierOfferPrice $b) =>
+            (int) ($b->getCurrency() === $offer->getCurrency()) <=> (int) ($a->getCurrency() === $offer->getCurrency())
+            ?: (int) $b->isValidOn($today) <=> (int) $a->isValidOn($today)
+            ?: strcmp($a->getCurrency(), $b->getCurrency())
+            ?: ((float) $a->getMinimumQuantity() <=> (float) $b->getMinimumQuantity())
+            ?: strcmp($b->getValidFrom()?->format('Y-m-d') ?? '', $a->getValidFrom()?->format('Y-m-d') ?? '')
+        );
+        $currentPrice = $offer->priceFor($offer->getMinimumOrderQuantity(), $offer->getCurrency());
+
         return [
             'id' => $offer->getId()->toRfc4122(),
             'supplierId' => $offer->getSupplier()->getId()->toRfc4122(),
@@ -744,18 +998,44 @@ final class PurchasingController extends AbstractController
             'productId' => $offer->getProduct()->getId()->toRfc4122(),
             'productSku' => $offer->getProduct()->getSku(),
             'productName' => $productName,
+            'variantCombination' => $this->variantCombination($offer->getProduct(), $this->entityManager),
             'supplierSku' => $offer->getSupplierSku(),
-            'unitCost' => (float) $offer->getUnitCost(),
+            'unitCost' => $currentPrice === null ? null : (float) $currentPrice->getUnitCost(),
             'currency' => $offer->getCurrency(),
-            'minimumQuantity' => (float) $offer->getMinimumQuantity(),
+            'preferredCurrency' => $offer->getCurrency(),
+            'minimumQuantity' => (float) $offer->getMinimumOrderQuantity(),
+            'minimumOrderQuantity' => (float) $offer->getMinimumOrderQuantity(),
+            'prices' => array_map(static fn (SupplierOfferPrice $price) => [
+                'id' => $price->getId()->toRfc4122(),
+                'minimumQuantity' => (float) $price->getMinimumQuantity(),
+                'unitCost' => (float) $price->getUnitCost(),
+                'currency' => $price->getCurrency(),
+                'validFrom' => $price->getValidFrom()?->format('Y-m-d'),
+                'validUntil' => $price->getValidUntil()?->format('Y-m-d'),
+            ], $prices),
             'purchaseUnit' => $offer->getPurchaseUnit(),
-            'stockUnitsPerPurchaseUnit' => $offer->getStockUnitsPerPurchaseUnit(),
+            'stockUnitsPerPurchaseUnit' => (float) $offer->getStockUnitsPerPurchaseUnit(),
             'validFrom' => $offer->getValidFrom()?->format('Y-m-d'),
             'validUntil' => $offer->getValidUntil()?->format('Y-m-d'),
             'leadTimeDays' => $offer->getLeadTimeDays(),
             'preferred' => $offer->isPreferred(),
             'active' => $offer->isActive(),
         ];
+    }
+
+    private function loadOfferPrices(array $offers, EntityManagerInterface $entityManager): void
+    {
+        if ($offers === []) {
+            return;
+        }
+        $entityManager->createQueryBuilder()
+            ->select('offer', 'price')
+            ->from(SupplierOffer::class, 'offer')
+            ->leftJoin('offer.prices', 'price')
+            ->where('offer IN (:offers)')
+            ->setParameter('offers', $offers)
+            ->getQuery()
+            ->getResult();
     }
 
     private function productNames(array $products, Tenant $tenant, EntityManagerInterface $entityManager): array
@@ -770,22 +1050,74 @@ final class PurchasingController extends AbstractController
         if (!$locale instanceof Locale) {
             return [];
         }
+        $translationProducts = $products;
+        foreach ($products as $product) {
+            if ($product instanceof Product && $product->getParent() instanceof Product) {
+                $translationProducts[] = $product->getParent();
+            }
+        }
         $translations = $entityManager->getRepository(ProductTranslation::class)->findBy([
             'locale' => $locale,
-            'product' => $products,
+            'product' => $translationProducts,
         ]);
         $names = [];
         foreach ($translations as $translation) {
             $names[$translation->getProduct()->getId()->toRfc4122()] = $translation->getName();
         }
 
+        foreach ($products as $product) {
+            if (!$product instanceof Product || !$product->getParent() instanceof Product) {
+                continue;
+            }
+            $productId = $product->getId()->toRfc4122();
+            $parentId = $product->getParent()->getId()->toRfc4122();
+            $names[$productId] = $names[$parentId] ?? $names[$productId] ?? null;
+        }
+
         return $names;
+    }
+
+    private function variantCombination(Product $product, EntityManagerInterface $entityManager): ?string
+    {
+        if (!$product->getParent()) {
+            return null;
+        }
+
+        $values = array_values($product->getOptionValues());
+        $values = array_values(array_filter(
+            $values,
+            static fn (mixed $value): bool => is_scalar($value) && (string) $value !== '',
+        ));
+
+        $ids = [];
+        foreach ($values as $value) {
+            if (Uuid::isValid((string) $value)) {
+                $ids[(string) $value] = Uuid::fromString((string) $value);
+            }
+        }
+        $labels = [];
+        if ($ids !== []) {
+            foreach ($entityManager->getRepository(Property::class)->findBy(['id' => array_values($ids)]) as $property) {
+                $labels[$property->getId()->toRfc4122()] = $property->getName();
+            }
+            foreach ($entityManager->getRepository(ProductOptionValue::class)->findBy(['id' => array_values($ids)]) as $optionValue) {
+                $labels[$optionValue->getId()->toRfc4122()] = $optionValue->getValue();
+            }
+        }
+
+        return $values === []
+            ? null
+            : implode(' / ', array_map(
+                static fn (mixed $value): string => $labels[(string) $value] ?? (string) $value,
+                $values,
+            ));
     }
 
     private function orderPayload(PurchaseOrder $order): array
     {
         return [
             'id' => $order->getId()->toRfc4122(),
+            'reference' => $order->getReference(),
             'supplierId' => $order->getSupplier()->getId()->toRfc4122(),
             'supplierName' => $order->getSupplier()->getName(),
             'warehouseId' => $order->getWarehouse()->getId()->toRfc4122(),
@@ -810,7 +1142,7 @@ final class PurchasingController extends AbstractController
                     'openQuantity' => (float) $item->getOpenQuantity(),
                     'unitCost' => (float) $item->getUnitCost(),
                     'purchaseUnit' => $item->getPurchaseUnit(),
-                    'stockUnitsPerPurchaseUnit' => $item->getStockUnitsPerPurchaseUnit(),
+                    'stockUnitsPerPurchaseUnit' => (float) $item->getStockUnitsPerPurchaseUnit(),
                 ],
                 $order->getItems()->toArray(),
             ),

@@ -40,8 +40,8 @@ class PurchaseOrderItem
     #[ORM\Column(length: 64)]
     private string $purchaseUnit = 'unit';
 
-    #[ORM\Column]
-    private int $stockUnitsPerPurchaseUnit = 1;
+    #[ORM\Column(type: 'decimal', precision: 19, scale: 4)]
+    private string $stockUnitsPerPurchaseUnit = '1.0000';
 
     public function __construct(
         PurchaseOrder $purchaseOrder,
@@ -50,7 +50,7 @@ class PurchaseOrderItem
         string $unitCost,
         ?string $supplierSku,
         string $purchaseUnit = 'unit',
-        int $stockUnitsPerPurchaseUnit = 1,
+        string|int $stockUnitsPerPurchaseUnit = 1,
     )
     {
         $this->id = Uuid::v7();
@@ -60,7 +60,7 @@ class PurchaseOrderItem
         $this->unitCost = $unitCost;
         $this->supplierSku = $supplierSku;
         $this->purchaseUnit = $purchaseUnit;
-        $this->stockUnitsPerPurchaseUnit = $stockUnitsPerPurchaseUnit;
+        $this->stockUnitsPerPurchaseUnit = (string) $stockUnitsPerPurchaseUnit;
     }
 
     public function receive(string $good, string $damaged): void
@@ -114,13 +114,19 @@ class PurchaseOrderItem
         return $this->purchaseUnit;
     }
 
-    public function getStockUnitsPerPurchaseUnit(): int
+    public function getStockUnitsPerPurchaseUnit(): string
     {
         return $this->stockUnitsPerPurchaseUnit;
     }
 
     public function toStockQuantity(string $purchaseQuantity): string
     {
-        return number_format((float) $purchaseQuantity * $this->stockUnitsPerPurchaseUnit, 4, '.', '');
+        $exact = bcmul($purchaseQuantity, $this->stockUnitsPerPurchaseUnit, 8);
+        $stored = bcadd($exact, '0', 4);
+        if (bccomp($exact, $stored, 8) !== 0) {
+            throw new \DomainException('The converted receipt quantity needs more than four decimal places.');
+        }
+
+        return $stored;
     }
 }

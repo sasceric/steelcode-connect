@@ -45,6 +45,12 @@ class InventoryLevel
     #[ORM\Column(type: 'decimal', precision: 19, scale: 4, nullable: true)]
     private ?string $reorderThreshold = null;
 
+    #[ORM\Column(type: 'decimal', precision: 19, scale: 4, nullable: true)]
+    private ?string $reorderTarget = null;
+
+    #[ORM\Column(nullable: true)]
+    private ?int $reorderLeadDays = null;
+
     #[ORM\Column]
     private \DateTimeImmutable $createdAt;
 
@@ -107,6 +113,29 @@ class InventoryLevel
             '.',
             '',
         );
+    }
+
+    public function getReorderThreshold(): ?string
+    {
+        return $this->reorderThreshold;
+    }
+
+    public function getReorderTarget(): ?string
+    {
+        return $this->reorderTarget;
+    }
+
+    public function getReorderLeadDays(): ?int
+    {
+        return $this->reorderLeadDays;
+    }
+
+    public function setReorderPolicy(?string $threshold, ?string $target, ?int $leadDays): void
+    {
+        $this->reorderThreshold = $threshold;
+        $this->reorderTarget = $target;
+        $this->reorderLeadDays = $leadDays;
+        $this->updatedAt = new \DateTimeImmutable();
     }
     public function setQuantity(string $quantity): void
     {

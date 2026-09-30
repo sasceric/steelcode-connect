@@ -9,9 +9,13 @@ type Offer = {
   productSku: string | null
   productName: string | null
   supplierSku: string | null
-  unitCost: number
+  variantCombination?: string | null
+  unitCost: number | null
   currency: string
+  preferredCurrency: string
   minimumQuantity: number
+  minimumOrderQuantity: number
+  prices: PriceInput[]
   purchaseUnit: string
   stockUnitsPerPurchaseUnit: number
   validFrom: string | null
@@ -20,7 +24,26 @@ type Offer = {
   preferred: boolean
   active: boolean
 }
-type Product = { id: string, name: string, sku: string | null }
+type Product = { id: string, name: string, sku: string | null, unitCode?: string | null, variantCombination?: string | null }
+type PriceInput = {
+  minimumQuantity: number
+  unitCost: number
+  currency: string
+  validFrom: string
+  validUntil: string
+}
+type OfferInput = {
+  supplierSku: string
+  preferredCurrency: string
+  minimumOrderQuantity: number
+  prices: PriceInput[]
+  purchaseUnit: string
+  stockUnitsPerPurchaseUnit: number
+  leadTimeDays: number | null
+  preferred: boolean
+  active: boolean
+}
+type BatchRow = OfferInput & { productId: string, productName: string, productNumber: string | null, variantCombination?: string | null }
 
 const { t } = useI18n()
 const notify = useAppToast()
@@ -34,17 +57,17 @@ const debouncedSearch = ref('')
 const modalOpen = ref(false)
 const saving = ref(false)
 const editing = ref<Offer | null>(null)
+const selectedProductIds = ref<string[]>([])
+const batchRows = ref<BatchRow[]>([])
 const form = reactive({
   supplierId: '',
   productId: '',
   supplierSku: '',
-  unitCost: 0,
-  currency: 'EUR',
-  minimumQuantity: 1,
+  preferredCurrency: 'EUR',
+  minimumOrderQuantity: 1,
+  prices: [] as PriceInput[],
   purchaseUnit: 'unit',
   stockUnitsPerPurchaseUnit: 1,
-  validFrom: '',
-  validUntil: '',
   leadTimeDays: null as number | null,
   preferred: false,
   active: true
@@ -65,12 +88,49 @@ const listUrl = computed(() => {
 const { data, status, refresh } = await useAsyncData('supplier-offers-page', () =>
   apiFetch<{ offers: Offer[], pagination: { total: number } }>(listUrl.value)
 )
+const { data: currenciesData } = await useAsyncData('supplier-offer-currencies', () =>
+  apiFetch<{ currencies: { code: string, symbol: string }[] }>('/products/currencies')
+)
+const { data: unitsData } = await useAsyncData('supplier-offer-units', () =>
+  apiFetch<{ units: { code: string, symbol: string, labels: Record<string, string> }[] }>('/catalogue/references')
+)
+const currencyItems = computed(() => (currenciesData.value?.currencies ?? []).map(currency => ({
+  label: `${currency.code} (${currency.symbol})`,
+  value: currency.code
+})))
+const defaultCurrency = computed(() => currencyItems.value.some(item => item.value === 'EUR')
+  ? 'EUR'
+  : currencyItems.value[0]?.value ?? '')
+const unitItems = computed(() => {
+  const items = (unitsData.value?.units ?? []).map(unit => ({
+    label: `${Object.values(unit.labels)[0] ?? unit.code} (${unit.symbol})`,
+    value: unit.code
+  }))
+  if (editing.value?.purchaseUnit && !items.some(item => item.value === editing.value?.purchaseUnit)) {
+    items.push({ label: `${editing.value.purchaseUnit} (${t('purchasing.legacyUnit')})`, value: editing.value.purchaseUnit })
+  }
+  return items
+})
+const unitLabel = (code: string) => {
+  const label = unitItems.value.find(item => item.value === code)?.label
+  return label?.split(' (')[0] ?? code
+}
 const productItems = computed(() => {
-  const all = selectedProduct.value && !products.value.some(product => product.id === selectedProduct.value?.id)
-    ? [selectedProduct.value, ...products.value]
-    : products.value
+  const selected: Product[] = batchRows.value.map(row => ({
+    id: row.productId,
+    name: row.productName,
+    sku: row.productNumber,
+    variantCombination: row.variantCombination
+  }))
+  if (selectedProduct.value) selected.push(selectedProduct.value)
+  const all = [...selected, ...products.value].filter((product, index, allProducts) =>
+    allProducts.findIndex(candidate => candidate.id === product.id) === index
+  )
   return all.map(product => ({
-    label: product.sku ? `${product.name} · ${product.sku}` : product.name,
+    label: product.name,
+    productName: product.name,
+    productNumber: product.sku,
+    variantCombination: product.variantCombination,
     value: product.id
   }))
 })
@@ -86,6 +146,7 @@ const loadProducts = async (reset = false) => {
   try {
     const params = new URLSearchParams({
       view: 'options',
+      includeVariants: '1',
       limit: '25',
       page: String(productPage.value),
       sort: 'name',
@@ -103,17 +164,23 @@ const loadProducts = async (reset = false) => {
 }
 const openOffer = (offer?: Offer) => {
   editing.value = offer ?? null
+  selectedProductIds.value = []
+  batchRows.value = []
   Object.assign(form, {
     supplierId: offer?.supplierId ?? '',
     productId: offer?.productId ?? '',
     supplierSku: offer?.supplierSku ?? '',
-    unitCost: offer?.unitCost ?? 0,
-    currency: offer?.currency ?? 'EUR',
-    minimumQuantity: offer?.minimumQuantity ?? 1,
-    purchaseUnit: offer?.purchaseUnit ?? 'unit',
+    preferredCurrency: offer?.preferredCurrency ?? defaultCurrency.value,
+    minimumOrderQuantity: offer?.minimumOrderQuantity ?? 1,
+    prices: offer?.prices.map(price => ({
+      minimumQuantity: price.minimumQuantity,
+      unitCost: price.unitCost,
+      currency: price.currency,
+      validFrom: price.validFrom ?? '',
+      validUntil: price.validUntil ?? ''
+    })) ?? [{ minimumQuantity: 1, unitCost: 0, currency: defaultCurrency.value, validFrom: '', validUntil: '' }],
+    purchaseUnit: offer?.purchaseUnit ?? '',
     stockUnitsPerPurchaseUnit: offer?.stockUnitsPerPurchaseUnit ?? 1,
-    validFrom: offer?.validFrom ?? '',
-    validUntil: offer?.validUntil ?? '',
     leadTimeDays: offer?.leadTimeDays ?? null,
     preferred: offer?.preferred ?? false,
     active: offer?.active ?? true
@@ -124,17 +191,37 @@ const openOffer = (offer?: Offer) => {
   void loadProducts(true)
   modalOpen.value = true
 }
+const closeModal = () => {
+  modalOpen.value = false
+}
 const saveOffer = async () => {
-  if (!form.supplierId || !form.productId || form.unitCost < 0 || form.minimumQuantity <= 0 || !form.purchaseUnit.trim() || !Number.isInteger(form.stockUnitsPerPurchaseUnit) || form.stockUnitsPerPurchaseUnit < 1 || (form.validFrom && form.validUntil && form.validFrom > form.validUntil)) {
+  const rows = editing.value ? [form] : batchRows.value
+  if (!form.supplierId || rows.length === 0 || rows.some(row =>
+    row.minimumOrderQuantity <= 0
+    || !currencyItems.value.some(item => item.value === row.preferredCurrency)
+    || !unitItems.value.some(item => item.value === row.purchaseUnit)
+    || row.stockUnitsPerPurchaseUnit <= 0
+    || row.prices.some(price => price.minimumQuantity <= 0
+      || price.unitCost < 0
+      || !currencyItems.value.some(item => item.value === price.currency)
+      || !!(price.validFrom && price.validUntil && price.validFrom > price.validUntil))
+  )) {
     notify.error(t('common.tryAgain'), t('purchasing.offerValidation'))
     return
   }
   saving.value = true
   try {
-    await apiFetch(editing.value ? `/inventory/supplier-offers/${editing.value.id}` : '/inventory/supplier-offers', {
-      method: editing.value ? 'PATCH' : 'POST',
-      body: form
-    })
+    if (editing.value) {
+      await apiFetch(`/inventory/supplier-offers/${editing.value.id}`, {
+        method: 'PATCH',
+        body: form
+      })
+    } else {
+      await apiFetch('/inventory/supplier-offers/batch', {
+        method: 'POST',
+        body: { supplierId: form.supplierId, offers: batchRows.value }
+      })
+    }
     modalOpen.value = false
     await refresh()
     notify.success(t('common.changesSaved'), t('purchasing.offerSaved'))
@@ -144,22 +231,43 @@ const saveOffer = async () => {
     saving.value = false
   }
 }
-const clearValidFrom = () => {
-  form.validFrom = ''
+const onProductSelection = (ids: string | string[]) => {
+  if (!Array.isArray(ids)) return
+  selectedProductIds.value = ids
+  batchRows.value = ids.map(id => {
+    const existing = batchRows.value.find(row => row.productId === id)
+    if (existing) return existing
+    const product = products.value.find(item => item.id === id)
+    return {
+      productId: id,
+      productName: product?.name ?? id,
+      productNumber: product?.sku ?? null,
+      variantCombination: product?.variantCombination,
+      supplierSku: '',
+      preferredCurrency: defaultCurrency.value,
+      minimumOrderQuantity: 1,
+      prices: [{ minimumQuantity: 1, unitCost: 0, currency: defaultCurrency.value, validFrom: '', validUntil: '' }],
+      purchaseUnit: unitItems.value.some(item => item.value === product?.unitCode) ? product?.unitCode ?? '' : '',
+      stockUnitsPerPurchaseUnit: 1,
+      leadTimeDays: null,
+      preferred: false,
+      active: true
+    }
+  })
 }
-const clearValidUntil = () => {
-  form.validUntil = ''
+const removeBatchRow = (id: string) => {
+  onProductSelection(selectedProductIds.value.filter(productId => productId !== id))
 }
 const columns: TableColumn<Offer>[] = [
   { accessorKey: 'supplierName', header: () => t('suppliers.name') },
   { accessorKey: 'productName', header: () => t('inventoryTransfers.products'), cell: ({ row }) => row.original.productName ?? '—' },
   { accessorKey: 'productSku', header: () => t('purchasing.productNumber'), cell: ({ row }) => row.original.productSku ?? '—' },
   { accessorKey: 'supplierSku', header: () => t('purchasing.supplierSku'), cell: ({ row }) => row.original.supplierSku ?? '—' },
-  { id: 'cost', header: () => t('purchasing.unitCost'), cell: ({ row }) => `${row.original.unitCost.toFixed(2)} ${row.original.currency}` },
-  { accessorKey: 'minimumQuantity', header: () => t('purchasing.minimumQuantity') },
-  { id: 'purchaseUnit', header: () => t('purchasing.purchaseUnit'), cell: ({ row }) => `${row.original.purchaseUnit} · ${row.original.stockUnitsPerPurchaseUnit} ${t('purchasing.stockUnits')}` },
+  { id: 'cost', header: () => t('purchasing.unitCost'), cell: ({ row }) => row.original.unitCost === null ? '—' : `${row.original.unitCost.toFixed(2)} ${row.original.currency}` },
+  { accessorKey: 'minimumOrderQuantity', header: () => t('purchasing.minimumOrderQuantity') },
+  { id: 'purchaseUnit', header: () => t('purchasing.purchaseUnit'), cell: ({ row }) => `${unitLabel(row.original.purchaseUnit)} · ${row.original.stockUnitsPerPurchaseUnit} ${t('purchasing.stockUnits')}` },
   { accessorKey: 'leadTimeDays', header: () => t('purchasing.leadTime'), cell: ({ row }) => row.original.leadTimeDays ?? '—' },
-  { accessorKey: 'validUntil', header: () => t('purchasing.validUntil'), cell: ({ row }) => row.original.validUntil ?? '—' },
+  { id: 'priceTiers', header: () => t('purchasing.priceTiers'), cell: ({ row }) => row.original.prices.length },
   { accessorKey: 'active', header: () => t('inventory.status'), cell: ({ row }) => h(UBadge, { color: row.original.active ? 'success' : 'neutral', variant: 'subtle' }, () => row.original.active ? t('inventory.active') : t('inventory.inactive')) },
   {
     id: 'actions',
@@ -231,7 +339,7 @@ onBeforeUnmount(() => {
     </template>
   </AppDataTable>
 
-  <UModal v-model:open="modalOpen" :title="editing ? t('purchasing.editOffer') : t('purchasing.addOffer')">
+  <UModal v-model:open="modalOpen" :title="editing ? t('purchasing.editOffer') : t('purchasing.addOffer')" :ui="{ content: 'sm:max-w-5xl' }">
     <template #body>
       <UForm class="space-y-4" @submit.prevent="saveOffer">
         <UFormField :label="t('suppliers.name')">
@@ -243,56 +351,54 @@ onBeforeUnmount(() => {
         </UFormField>
         <UFormField :label="t('inventoryTransfers.products')">
           <SearchableSelect
-            v-model="form.productId"
+            :model-value="editing ? form.productId : selectedProductIds"
             v-model:search-term="productSearch"
             :items="productItems"
             :disabled="!!editing"
+            :multiple="!editing"
+            :show-placeholder-when-selected="!editing"
             :has-more="productHasMore"
             :loading="productLoading"
             :load-more="loadProducts"
             :placeholder="t('purchasing.selectProduct')"
             :search-placeholder="t('products.searchProducts')"
+            @update:model-value="onProductSelection"
           />
         </UFormField>
-        <UFormField :label="t('purchasing.supplierSku')">
-          <UInput v-model="form.supplierSku" class="w-full" />
-        </UFormField>
-        <div class="grid grid-cols-2 gap-3">
-          <UFormField :label="t('purchasing.unitCost')">
-            <UInput v-model.number="form.unitCost" type="number" min="0" step="0.0001" class="w-full" />
-          </UFormField>
-          <UFormField :label="t('purchasing.currency')">
-            <UInput v-model="form.currency" maxlength="3" class="w-full" />
-          </UFormField>
-          <UFormField :label="t('purchasing.minimumQuantity')">
-            <UInput v-model.number="form.minimumQuantity" type="number" min="0.0001" step="0.0001" class="w-full" />
-          </UFormField>
-          <UFormField :label="t('purchasing.purchaseUnit')">
-            <UInput v-model="form.purchaseUnit" maxlength="64" class="w-full" />
-          </UFormField>
-          <UFormField :label="t('purchasing.stockUnitsPerPurchaseUnit')">
-            <UInput v-model.number="form.stockUnitsPerPurchaseUnit" type="number" min="1" step="1" class="w-full" />
-          </UFormField>
-          <UFormField :label="t('purchasing.validFrom')">
-            <div class="flex items-center gap-1">
-              <CustomFieldDateInput v-model="form.validFrom" :with-time="false" :placeholder="t('purchasing.noValidityDate')" />
-              <UButton icon="i-lucide-x" color="neutral" variant="ghost" :aria-label="t('purchasing.clearDate')" @click="clearValidFrom" />
+        <SupplierOfferFields
+          v-if="editing"
+          :model-value="form"
+          :currencies="currencyItems"
+          :units="unitItems"
+        />
+        <div v-else class="max-h-[55vh] space-y-4 overflow-y-auto pr-1">
+          <div
+            v-for="row in batchRows"
+            :key="row.productId"
+            class="rounded-lg border border-default p-4"
+          >
+            <div class="mb-3 flex items-center justify-between gap-2">
+              <p class="font-medium text-highlighted">
+                {{ row.productName }}
+              </p>
+              <UButton
+                icon="i-lucide-x"
+                color="neutral"
+                variant="ghost"
+                :aria-label="t('purchasing.removeItem')"
+                @click="removeBatchRow(row.productId)"
+              />
             </div>
-          </UFormField>
-          <UFormField :label="t('purchasing.validUntil')">
-            <div class="flex items-center gap-1">
-              <CustomFieldDateInput v-model="form.validUntil" :with-time="false" :placeholder="t('purchasing.noValidityDate')" />
-              <UButton icon="i-lucide-x" color="neutral" variant="ghost" :aria-label="t('purchasing.clearDate')" @click="clearValidUntil" />
-            </div>
-          </UFormField>
-          <UFormField :label="t('purchasing.leadTime')">
-            <UInput v-model.number="form.leadTimeDays" type="number" min="0" class="w-full" />
-          </UFormField>
+            <SupplierOfferFields
+              :model-value="row"
+              :currencies="currencyItems"
+              :units="unitItems"
+              compact
+            />
+          </div>
         </div>
-        <UCheckbox v-model="form.preferred" :label="t('purchasing.preferred')" />
-        <UCheckbox v-model="form.active" :label="t('inventory.active')" />
         <div class="flex justify-end gap-2">
-          <UButton :label="t('common.cancel')" color="neutral" variant="subtle" @click="modalOpen = false" />
+          <UButton :label="t('common.cancel')" color="neutral" variant="subtle" @click="closeModal" />
           <UButton :label="t('common.save')" type="submit" :loading="saving" />
         </div>
       </UForm>

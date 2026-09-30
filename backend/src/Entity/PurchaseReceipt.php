@@ -50,6 +50,12 @@ class PurchaseReceipt
     #[ORM\Column(type: 'json')]
     private array $damageHistory = [];
 
+    #[ORM\Column(type: 'decimal', precision: 19, scale: 4)]
+    private string $quarantineQuantity = '0.0000';
+
+    #[ORM\Column(length: 24, nullable: true)]
+    private ?string $quarantineStatus = null;
+
     #[ORM\Column]
     private \DateTimeImmutable $createdAt;
 
@@ -61,6 +67,7 @@ class PurchaseReceipt
         string $damagedQuantity,
         ?User $user,
         ?string $note,
+        string $quarantineQuantity = '0.0000',
     )
     {
         $this->id = Uuid::v7();
@@ -71,6 +78,8 @@ class PurchaseReceipt
         $this->damagedQuantity = $damagedQuantity;
         if ((float) $damagedQuantity > 0) {
             $this->damageResolution = 'open';
+            $this->quarantineQuantity = $quarantineQuantity;
+            $this->quarantineStatus = (float) $quarantineQuantity > 0 ? 'held' : 'legacy_untracked';
         }
         $this->user = $user;
         $this->note = $note;
@@ -132,6 +141,35 @@ class PurchaseReceipt
         return $this->damageHistory;
     }
 
+    public function getQuarantineQuantity(): string
+    {
+        return $this->quarantineQuantity;
+    }
+
+    public function getQuarantineStatus(): ?string
+    {
+        return $this->quarantineStatus;
+    }
+
+    public function resolveQuarantine(string $disposition, ?string $note, ?User $user = null): void
+    {
+        if ($this->quarantineStatus !== 'held') {
+            throw new \DomainException('Only physically held damaged goods can be released, returned, or scrapped.');
+        }
+        if (!in_array($disposition, ['released', 'returned', 'scrapped'], true)) {
+            throw new \DomainException('Invalid quarantine disposition.');
+        }
+        $this->damageHistory[] = [
+            'kind' => 'physical',
+            'from' => 'held',
+            'to' => $disposition,
+            'note' => $note,
+            'userId' => $user?->getId()->toRfc4122(),
+            'at' => (new \DateTimeImmutable())->format(DATE_ATOM),
+        ];
+        $this->quarantineStatus = $disposition;
+    }
+
     public function resolveDamage(string $resolution, ?string $note, ?User $user = null): void
     {
         if ((float) $this->damagedQuantity <= 0) {
@@ -141,6 +179,7 @@ class PurchaseReceipt
             throw new \DomainException('Invalid damage resolution.');
         }
         $this->damageHistory[] = [
+            'kind' => 'claim',
             'from' => $this->damageResolution,
             'to' => $resolution,
             'note' => $note,

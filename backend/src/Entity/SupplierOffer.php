@@ -2,6 +2,8 @@
 
 namespace App\Entity;
 
+use Doctrine\Common\Collections\ArrayCollection;
+use Doctrine\Common\Collections\Collection;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Uid\Uuid;
 
@@ -38,11 +40,17 @@ class SupplierOffer
     #[ORM\Column(type: 'decimal', precision: 19, scale: 4)]
     private string $minimumQuantity = '1.0000';
 
+    #[ORM\Column(type: 'decimal', precision: 19, scale: 4, options: ['default' => 1])]
+    private string $minimumOrderQuantity = '1.0000';
+
+    #[ORM\OneToMany(mappedBy: 'supplierOffer', targetEntity: SupplierOfferPrice::class, cascade: ['persist'], orphanRemoval: true)]
+    private Collection $prices;
+
     #[ORM\Column(length: 64)]
     private string $purchaseUnit = 'unit';
 
-    #[ORM\Column]
-    private int $stockUnitsPerPurchaseUnit = 1;
+    #[ORM\Column(type: 'decimal', precision: 19, scale: 4)]
+    private string $stockUnitsPerPurchaseUnit = '1.0000';
 
     #[ORM\Column(type: 'date_immutable', nullable: true)]
     private ?\DateTimeImmutable $validFrom = null;
@@ -68,6 +76,7 @@ class SupplierOffer
         $this->tenant = $tenant;
         $this->supplier = $supplier;
         $this->product = $product;
+        $this->prices = new ArrayCollection();
         $this->updatedAt = new \DateTimeImmutable();
     }
 
@@ -84,6 +93,7 @@ class SupplierOffer
         $this->unitCost = $unitCost;
         $this->currency = $currency;
         $this->minimumQuantity = $minimumQuantity;
+        $this->minimumOrderQuantity = $minimumQuantity;
         $this->leadTimeDays = $leadTimeDays;
         $this->preferred = $preferred;
         $this->active = $active;
@@ -125,15 +135,61 @@ class SupplierOffer
         return $this->minimumQuantity;
     }
 
+    public function getMinimumOrderQuantity(): string
+    {
+        return $this->minimumOrderQuantity;
+    }
+
+    public function setMinimumOrderQuantity(string $quantity): void
+    {
+        $this->minimumOrderQuantity = $quantity;
+        $this->updatedAt = new \DateTimeImmutable();
+    }
+
+    /** @return Collection<int, SupplierOfferPrice> */
+    public function getPrices(): Collection
+    {
+        return $this->prices;
+    }
+
+    /** @param SupplierOfferPrice[] $prices */
+    public function replacePrices(array $prices): void
+    {
+        $this->prices->clear();
+        foreach ($prices as $price) {
+            $this->prices->add($price);
+        }
+        $this->updatedAt = new \DateTimeImmutable();
+    }
+
+    public function priceFor(string $quantity, string $currency, ?\DateTimeImmutable $date = null): ?SupplierOfferPrice
+    {
+        $date ??= new \DateTimeImmutable('today');
+        $best = null;
+        foreach ($this->prices as $price) {
+            if ($price->getCurrency() !== $currency || !$price->isValidOn($date)
+                || (float) $price->getMinimumQuantity() > (float) $quantity) {
+                continue;
+            }
+            if ($best === null || (float) $price->getMinimumQuantity() > (float) $best->getMinimumQuantity()
+                || ((float) $price->getMinimumQuantity() === (float) $best->getMinimumQuantity()
+                    && ($price->getValidFrom()?->getTimestamp() ?? 0) > ($best->getValidFrom()?->getTimestamp() ?? 0))) {
+                $best = $price;
+            }
+        }
+
+        return $best;
+    }
+
     public function getLeadTimeDays(): ?int
     {
         return $this->leadTimeDays;
     }
 
-    public function setPurchaseUnit(string $purchaseUnit, int $stockUnitsPerPurchaseUnit): void
+    public function setPurchaseUnit(string $purchaseUnit, string|int $stockUnitsPerPurchaseUnit): void
     {
         $this->purchaseUnit = $purchaseUnit;
-        $this->stockUnitsPerPurchaseUnit = $stockUnitsPerPurchaseUnit;
+        $this->stockUnitsPerPurchaseUnit = (string) $stockUnitsPerPurchaseUnit;
         $this->updatedAt = new \DateTimeImmutable();
     }
 
@@ -142,7 +198,7 @@ class SupplierOffer
         return $this->purchaseUnit;
     }
 
-    public function getStockUnitsPerPurchaseUnit(): int
+    public function getStockUnitsPerPurchaseUnit(): string
     {
         return $this->stockUnitsPerPurchaseUnit;
     }

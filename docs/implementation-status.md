@@ -53,7 +53,8 @@ Ananas remains intentionally deferred until partner/API access is available. Con
 - Product categories: nested tree, drag/drop movement, add child/before/after actions, translations, SEO, media, product assignment and category custom fields.
 - Manufacturers: translated detail records, SEO, media, custom fields, product assignment and product-editor selection.
 - Shop references: units, taxes and delivery times, including translations and locale-aware lists.
-- Stock foundation: warehouses, inventory levels and stock movements. Products expose stock and available-stock behaviour designed for aggregate channel stock.
+- Inventory: per-warehouse balances/movements, transfers, stock counts, suppliers/offers, purchase orders/receipts/damage handling, replenishment and operational supplier invoice matching.
+- Sales: Shopware customer/address and order snapshots, historical imports, ongoing polling, reservations, recorded picking, partial shipment reconciliation, physical returns and exceptions. Connect-owned Shopware stock publication passed the disposable-shop cutover. See the [Inventory and Sales operating guide](inventory-and-sales-guide.md) for procedures, acceptance evidence and release limitations.
 - Shared currency and locale registries. New connector currencies can be registered when valid ISO data is available.
 
 ## Key data-model decisions
@@ -70,7 +71,8 @@ Ananas remains intentionally deferred until partner/API access is available. Con
 ## Current navigation structure
 
 - **Catalogue:** products, categories, properties/attributes and manufacturers.
-- **Inventory:** stock-oriented workspace, warehouse and movement foundation.
+- **Inventory:** suppliers/offers, purchase orders, supplier invoices, replenishment, stock, warehouses, transfers, counts and exceptions.
+- **Sales:** orders, pick lists and customers.
 - **Integrations:** configured channel/source connections.
 - **Company:** details, addresses, payment methods, pricing plans and billing.
 - **Settings:** profile, security, team, notifications and Shop references/custom fields.
@@ -88,8 +90,8 @@ Ananas remains intentionally deferred until partner/API access is available. Con
 
 ### Priority 2 — complete catalogue operations
 
-1. Finish warehouse management UI and stock-movement workflow, including reservations, adjustments, receiving and audit details.
-2. Define supplier records, supplier offers/costs and source-product matching/import review.
+1. Close remaining Inventory release controls: non-default warehouse deactivation guards, durable worker supervision and checkout/stock coordination where required. Staff permissions remain deferred until membership rollout.
+2. Add supplier-feed adapters and source-product matching/import review when distributor access/specifications are available; the supplier master, offers and purchasing workflow are implemented.
 3. Complete global media-library management: search, reusable assets, non-image support if required and safe storage cleanup/auditing.
 4. Add bulk catalogue actions, product duplication/archive/delete policy and import/export review screens.
 5. Add category-required channel attributes and publishing validation for marketplaces such as OLX.
@@ -98,7 +100,7 @@ Ananas remains intentionally deferred until partner/API access is available. Con
 
 1. Add invoice payment-state handling, payment-provider reconciliation and customer-visible billing lifecycle states.
 2. Add plan changes, proration/cancellation policy and product-limit enforcement.
-3. Add order/customer synchronisation only after product publishing is stable.
+3. Extend Sales import/synchronization beyond the implemented Shopware adapter when additional platforms enter scope.
 
 ### Priority 4 — quality, security and operations
 

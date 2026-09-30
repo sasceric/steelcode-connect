@@ -16,6 +16,9 @@ framework:
 
         routing:
             'App\Message\ImportShopwareProducts': async
+            'App\Message\ImportShopwareSales': async
+            'App\Message\QueueShopwareSalesSync': async
+            'App\Message\SyncShopwareSalesConnection': async
 
 # when@test:
 #    framework:

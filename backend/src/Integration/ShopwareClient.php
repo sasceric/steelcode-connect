@@ -6,6 +6,9 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 final class ShopwareClient
 {
+    /** @var array<string, array{token: string, expiresAt: int}> */
+    private array $accessTokens = [];
+
     public function __construct(
         private readonly HttpClientInterface $httpClient,
     ) {
@@ -191,6 +194,64 @@ final class ShopwareClient
         return max(0, (int) $reportedTotal);
     }
 
+    /** @param array<string, string> $secrets */
+    public function updateProductStock(
+        string $baseUrl,
+        array $secrets,
+        string $externalProductId,
+        string $availableQuantity,
+    ): void {
+        $quantity = (float) $availableQuantity;
+        if ($quantity < 0) {
+            throw new \InvalidArgumentException('Channel stock cannot be negative.');
+        }
+
+        $token = $this->accessToken($baseUrl, $secrets);
+        $this->request(
+            $baseUrl,
+            $token,
+            'PATCH',
+            '/api/product/'.rawurlencode($externalProductId),
+            ['stock' => (int) floor($quantity)],
+        );
+    }
+
+    /**
+     * @param array<string, string> $secrets
+     * @param list<array{id: string, stock: int}> $products
+     */
+    public function updateProductStocks(string $baseUrl, array $secrets, array $products): void
+    {
+        if ($products === []) {
+            return;
+        }
+
+        $payload = [];
+        foreach ($products as $product) {
+            if ($product['id'] === '' || $product['stock'] < 0) {
+                throw new \InvalidArgumentException('Each channel stock update needs a product ID and nonnegative quantity.');
+            }
+            $payload[] = $product;
+        }
+
+        $response = $this->request(
+            $baseUrl,
+            $this->accessToken($baseUrl, $secrets),
+            'POST',
+            '/api/_action/sync',
+            [
+                'stock-reconciliation' => [
+                    'entity' => 'product',
+                    'action' => 'upsert',
+                    'payload' => $payload,
+                ],
+            ],
+        );
+        if (is_array($response['errors'] ?? null) && $response['errors'] !== []) {
+            throw new \RuntimeException('Shopware rejected a bulk stock update.');
+        }
+    }
+
     /**
      * @param array<string, string> $secrets
      *
@@ -285,7 +346,7 @@ final class ShopwareClient
      * @param array<string, string> $secrets
      * @param array<string, mixed> $associations
      * @param array<string, mixed> $criteria
-     * @param callable(int, list<array<string, mixed>>): void $onPage
+     * @param callable(int, list<array<string, mixed>>, list<array<string, mixed>>): void $onPage
      */
     public function forEachEntityPage(
         string $baseUrl,
@@ -315,6 +376,18 @@ final class ShopwareClient
                 ], $criteria),
                 $languageId === null ? [] : ['sw-language-id' => $languageId],
             );
+            if (is_array($response['errors'] ?? null) && $response['errors'] !== []) {
+                $firstError = $response['errors'][0] ?? [];
+                $detail = is_array($firstError) ? ($firstError['detail'] ?? $firstError['title'] ?? null) : null;
+                throw new \RuntimeException(
+                    is_string($detail) && $detail !== ''
+                        ? 'Shopware '.$entity.' search failed: '.$detail
+                        : 'Shopware '.$entity.' search failed.',
+                );
+            }
+            if (!is_array($response['data'] ?? null)) {
+                throw new \RuntimeException('Shopware '.$entity.' search returned no data array.');
+            }
             $data = array_values(array_filter(
                 $response['data'] ?? [],
                 static fn (mixed $item): bool => is_array($item),
@@ -327,7 +400,11 @@ final class ShopwareClient
 
             $total = $this->pageTotal($response, $page, $limit, count($data));
 
-            $onPage($total, $data);
+            $included = array_values(array_filter(
+                is_array($response['included'] ?? null) ? $response['included'] : [],
+                static fn (mixed $item): bool => is_array($item),
+            ));
+            $onPage($total, $data, $included);
             if (count($data) < $limit) {
                 return;
             }
@@ -436,6 +513,16 @@ final class ShopwareClient
     /** @param array<string, string> $secrets */
     private function accessToken(string $baseUrl, array $secrets): string
     {
+        $cacheKey = hash('sha256', implode("\0", [
+            rtrim($baseUrl, '/'),
+            $secrets['accessKeyId'] ?? '',
+            $secrets['secretAccessKey'] ?? '',
+        ]));
+        $cached = $this->accessTokens[$cacheKey] ?? null;
+        if ($cached !== null && $cached['expiresAt'] > time()) {
+            return $cached['token'];
+        }
+
         $response = $this->httpClient->request('POST', rtrim($baseUrl, '/').'/api/oauth/token', [
             'body' => [
                 'grant_type' => 'client_credentials',
@@ -447,6 +534,16 @@ final class ShopwareClient
 
         if (!isset($response['access_token']) || !is_string($response['access_token'])) {
             throw new \RuntimeException('Shopware did not return an access token.');
+        }
+
+        $expiresIn = is_numeric($response['expires_in'] ?? null)
+            ? (int) $response['expires_in']
+            : 0;
+        if ($expiresIn > 30) {
+            $this->accessTokens[$cacheKey] = [
+                'token' => $response['access_token'],
+                'expiresAt' => time() + $expiresIn - 30,
+            ];
         }
 
         return $response['access_token'];
@@ -471,14 +568,27 @@ final class ShopwareClient
             $options['json'] = $json;
         }
 
-        $response = $this->httpClient->request(
+        $httpResponse = $this->httpClient->request(
             $method,
             rtrim($baseUrl, '/').$path,
             $options,
-        )->toArray(false);
+        );
+        $status = $httpResponse->getStatusCode();
+        $body = $httpResponse->getContent(false);
+        $response = $body === '' ? [] : json_decode($body, true);
 
         if (!is_array($response)) {
             throw new \RuntimeException('Shopware returned an invalid response.');
+        }
+        if ($status < 200 || $status >= 300) {
+            $firstError = $response['errors'][0] ?? null;
+            $detail = is_array($firstError)
+                ? ($firstError['detail'] ?? $firstError['title'] ?? null)
+                : null;
+
+            throw new \RuntimeException(is_string($detail) && $detail !== ''
+                ? 'Shopware request failed: '.$detail
+                : sprintf('Shopware request failed with HTTP %d.', $status));
         }
 
         return $response;

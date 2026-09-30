@@ -12,6 +12,10 @@ type Connection = {
 type ImportSettings = {
   areas: Record<string, boolean>
   productMatchOrder: string[]
+  salesHistoryFrom: string | null
+  salesContinuousSync: boolean
+  salesContinuousStartedAt: string | null
+  stockAuthority: 'shopware' | 'connect'
 }
 
 type ImportRun = {
@@ -39,6 +43,15 @@ type ImportLog = {
   createdAt: string
 }
 
+type SalesSyncStatus = {
+  enabled: boolean
+  startedAt: string | null
+  lastSyncedAt: string | null
+  lastError: string | null
+  lastErrorAt: string | null
+  pendingOrders: number
+}
+
 const getApiErrorMessage = (error: unknown): string | null => {
   if (
     typeof error !== 'object'
@@ -62,17 +75,44 @@ const connection = ref<Connection | null>(null)
 const settings = ref<ImportSettings | null>(null)
 const runs = ref<ImportRun[]>([])
 const logs = ref<ImportLog[]>([])
+const salesSyncStatus = ref<SalesSyncStatus | null>(null)
 const selectedRunId = ref<string>()
 const activeTab = useRouteTab('import')
 const saving = ref(false)
 const queueing = ref(false)
 let pollingTimer: ReturnType<typeof setInterval> | null = null
+let lastSalesStatusLoadAt = 0
 
 const connectionId = computed(() => String(route.params.id))
 const activeRun = computed(() =>
   runs.value.find(run => ['queued', 'running'].includes(run.status)) || null
 )
+const connectManagesStock = computed({
+  get: () => settings.value?.stockAuthority === 'connect',
+  set: (enabled: boolean) => {
+    if (settings.value) {
+      settings.value.stockAuthority = enabled ? 'connect' : 'shopware'
+    }
+  }
+})
 const visibleRun = computed(() => activeRun.value || runs.value[0] || null)
+const salesSyncDescription = computed(() => {
+  const status = salesSyncStatus.value
+  if (!status?.enabled) {
+    return t('integrations.salesSyncDisabled')
+  }
+  if (status.lastError) {
+    return status.lastError
+  }
+  if (!status.lastSyncedAt) {
+    return t('integrations.salesSyncWaiting')
+  }
+
+  return t('integrations.salesSyncLastRun', {
+    date: formattedDate(status.lastSyncedAt),
+    pending: status.pendingOrders
+  })
+})
 const tabs = computed(() => [
   {
     label: t('integrations.importTab'),
@@ -207,6 +247,14 @@ const progressLabel = (run: ImportRun) => {
     return t('integrations.importQueuedStatus')
   }
 
+  if (run.type === 'sales' && run.totalItems > 0) {
+    return t('integrations.salesImportProgress', {
+      processed: run.processedItems,
+      total: run.totalItems,
+      percentage: percentage(run)
+    })
+  }
+
   if (run.status === 'completed' && run.totalItems > 0) {
     return t('integrations.importProgressWithPercent', {
       processed: run.processedItems,
@@ -286,6 +334,17 @@ const loadLogs = async () => {
   logs.value = response.logs
 }
 
+const loadSalesSyncStatus = async () => {
+  if (connection.value?.connectorKey !== 'shopware') {
+    return
+  }
+
+  salesSyncStatus.value = await apiFetch<SalesSyncStatus>(
+    `/integrations/${connectionId.value}/sales-sync`
+  )
+  lastSalesStatusLoadAt = Date.now()
+}
+
 const openLogs = async (run: ImportRun) => {
   selectedRunId.value = run.id
   activeTab.value = 'logs'
@@ -313,6 +372,7 @@ const save = async () => {
       }
     })
     settings.value = response.importSettings
+    await loadSalesSyncStatus()
     toast.success(t('common.saved'), response.message)
   } catch (error: unknown) {
     toast.error(
@@ -349,9 +409,60 @@ const queueImport = async () => {
   }
 }
 
+const queueSalesImport = async () => {
+  if (!settings.value) {
+    return
+  }
+
+  queueing.value = true
+  try {
+    const configuration = await apiFetch<{
+      importSettings: ImportSettings
+    }>(`/integrations/${connectionId.value}/configuration`, {
+      method: 'PATCH',
+      body: {
+        importSettings: settings.value
+      }
+    })
+    settings.value = configuration.importSettings
+
+    const response = await apiFetch<{
+      message: string
+      run: ImportRun
+    }>(`/integrations/${connectionId.value}/imports/sales`, {
+      method: 'POST'
+    })
+    runs.value = [
+      response.run,
+      ...runs.value.filter(run => run.id !== response.run.id)
+    ]
+    selectedRunId.value = response.run.id
+    toast.success(t('integrations.importSales'), response.message)
+  } catch (error: unknown) {
+    toast.error(
+      t('integrations.salesImportFailed'),
+      getApiErrorMessage(error) || t('common.tryAgain')
+    )
+  } finally {
+    queueing.value = false
+  }
+}
+
+const updateSalesHistoryFrom = (value: string) => {
+  if (settings.value) {
+    settings.value.salesHistoryFrom = value || null
+  }
+}
+
 onMounted(() => {
+  void loadSalesSyncStatus()
+
   pollingTimer = setInterval(() => {
     void loadRuns()
+
+    if (activeTab.value === 'import' && Date.now() - lastSalesStatusLoadAt > 10000) {
+      void loadSalesSyncStatus()
+    }
 
     if (activeTab.value === 'logs') {
       void loadLogs()
@@ -458,6 +569,65 @@ await load()
             </div>
           </UPageCard>
 
+          <UPageCard v-if="connection?.connectorKey === 'shopware'">
+            <template #header>
+              <div class="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <p class="font-medium text-highlighted">
+                    {{ t('integrations.salesImportTitle') }}
+                  </p>
+                  <p class="mt-1 text-sm text-muted">
+                    {{ t('integrations.salesImportDescription') }}
+                  </p>
+                </div>
+                <UButton
+                  :label="t('integrations.importSales')"
+                  :loading="queueing"
+                  :disabled="activeRun !== null || !connection?.enabled || connection.status !== 'active' || (!settings.areas.salesCustomers && !settings.areas.salesOrders)"
+                  @click="queueSalesImport"
+                />
+              </div>
+            </template>
+            <div class="grid gap-5 sm:grid-cols-2">
+              <USwitch
+                v-model="settings.areas.salesCustomers"
+                :label="t('integrations.salesCustomers')"
+                :description="t('integrations.salesCustomersDescription')"
+              />
+              <USwitch
+                v-model="settings.areas.salesOrders"
+                :label="t('integrations.salesOrders')"
+                :description="t('integrations.salesOrdersDescription')"
+              />
+              <UFormField :label="t('integrations.salesHistoryFrom')">
+                <CustomFieldDateInput
+                  :model-value="settings.salesHistoryFrom ?? ''"
+                  :with-time="false"
+                  @update:model-value="updateSalesHistoryFrom"
+                />
+              </UFormField>
+              <USwitch
+                v-model="settings.salesContinuousSync"
+                :label="t('integrations.salesContinuousSync')"
+                :description="t('integrations.salesContinuousSyncDescription')"
+              />
+              <USwitch
+                v-model="connectManagesStock"
+                :label="t('integrations.connectManagesStock')"
+                :description="t('integrations.connectManagesStockDescription')"
+              />
+            </div>
+            <UAlert
+              v-if="salesSyncStatus"
+              class="mt-5"
+              :icon="salesSyncStatus.lastError ? 'i-lucide-circle-alert' : 'i-lucide-refresh-cw'"
+              :color="salesSyncStatus.lastError ? 'error' : salesSyncStatus.lastSyncedAt ? 'success' : 'info'"
+              variant="subtle"
+              :title="t('integrations.salesSyncStatus')"
+              :description="salesSyncDescription"
+            />
+          </UPageCard>
+
           <UAlert
             icon="i-lucide-list-tree"
             color="info"
@@ -561,7 +731,7 @@ await load()
               <div>
                 <div class="flex items-center gap-2">
                   <p class="font-medium text-highlighted">
-                    {{ t('integrations.importProducts') }}
+                    {{ t(run.type === 'sales' ? 'integrations.importSales' : 'integrations.importProducts') }}
                   </p>
                   <UBadge
                     :label="statusLabel(run.status)"

@@ -4,6 +4,7 @@ import type { Row, SortingState } from '@tanstack/table-core'
 
 type Product = {
   id: string
+  parentId: string | null
   name: string
   seoUrl: string
   translations: Record<string, { name: string, seoUrl: string | null }>
@@ -37,6 +38,8 @@ const productSorting = ref<SortingState>([])
 const formValidation = useFormValidation()
 const validationErrors = formValidation.errors
 const form = reactive({ name: '' })
+const nextProductNumber = ref('')
+const loadingProductNumber = ref(false)
 const selectedLocale = ref(auth.tenant.value?.defaultSnippetLocale || 'en-GB')
 const defaultLocale = computed(() => auth.tenant.value?.defaultSnippetLocale || 'en-GB')
 const currentPage = ref(1)
@@ -174,7 +177,7 @@ const columns: TableColumn<Product>[] = [
               class: 'cursor-pointer truncate text-left font-medium text-highlighted hover:text-primary',
               onClick: () => navigateTo(`/catalogue/products/${row.original.id}`)
             },
-            row.original.name
+            row.original.parentId ? `↳ ${row.original.name}` : row.original.name
           ),
           row.original.hasVariants
             ? h(UButton, {
@@ -278,11 +281,23 @@ watch(productListUrl, () => {
   void refresh()
 })
 
+const loadNextProductNumber = async () => {
+  loadingProductNumber.value = true
+  try {
+    const { productNumber } = await apiFetch<{ productNumber: string }>('/products/next-number')
+    nextProductNumber.value = productNumber
+  } finally {
+    loadingProductNumber.value = false
+  }
+}
+
 const openCreate = () => {
   selectedLocale.value = defaultLocale.value
   form.name = ''
+  nextProductNumber.value = ''
   formValidation.clear()
   open.value = true
+  void loadNextProductNumber()
 }
 
 const requestProductRemoval = (productIds: string[]) => {
@@ -448,6 +463,14 @@ const add = async () => {
               autofocus
               class="w-full"
               @update:model-value="formValidation.clear('name')"
+            />
+          </UFormField>
+          <UFormField :label="t('products.productNumber')">
+            <UInput
+              :model-value="nextProductNumber"
+              :loading="loadingProductNumber"
+              readonly
+              class="w-full"
             />
           </UFormField>
           <div class="flex justify-end gap-2">

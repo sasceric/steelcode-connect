@@ -13,6 +13,7 @@ use App\Entity\SupplierOffer;
 use App\Entity\Tenant;
 use App\Entity\Warehouse;
 use App\Service\InventoryService;
+use App\Service\InventorySyncOutboxService;
 use Symfony\Bundle\FrameworkBundle\Test\KernelTestCase;
 use Symfony\Component\Uid\Uuid;
 
@@ -22,7 +23,7 @@ final class PurchasingFlowTest extends KernelTestCase
     {
         self::bootKernel();
         $entityManager = self::$kernel->getContainer()->get('doctrine')->getManager();
-        $inventory = new InventoryService();
+        $inventory = new InventoryService(new InventorySyncOutboxService());
         $connection = $entityManager->getConnection();
         $connection->beginTransaction();
         try {
@@ -132,7 +133,16 @@ final class PurchasingFlowTest extends KernelTestCase
             $item->receive('2.0000', '1.0000');
             $order->markReceived();
             $receiptKey = Uuid::v7();
-            $receipt = new PurchaseReceipt($order, $receiptKey, $item, '2.0000', '1.0000', null, 'First delivery');
+            $receipt = new PurchaseReceipt(
+                $order,
+                $receiptKey,
+                $item,
+                '2.0000',
+                '1.0000',
+                null,
+                'First delivery',
+                $item->toStockQuantity('1.0000'),
+            );
             $entityManager->persist($receipt);
             $entityManager->flush();
             self::assertCount(1, $entityManager->getRepository(PurchaseReceipt::class)->findBy([
@@ -147,7 +157,8 @@ final class PurchasingFlowTest extends KernelTestCase
             $entityManager->refresh($receipt);
             self::assertCount(1, $receipt->getDamageHistory());
             self::assertEqualsWithDelta($beforeIncoming + 24, (float) $level->getIncomingQuantity(), 0.00001);
-            self::assertEqualsWithDelta($beforeOnHand + 24, (float) $level->getQuantity(), 0.00001);
+            self::assertEqualsWithDelta($beforeOnHand + 36, (float) $level->getQuantity(), 0.00001);
+            self::assertEqualsWithDelta(12, (float) $level->getUnavailableQuantity(), 0.00001);
 
             $inventory->receivePurchase($tenant, $warehouse, $product, $item->toStockQuantity('2.0000'), '0.0000', null, $order->getId()->toRfc4122(), null, $entityManager);
             $item->receive('2.0000', '0.0000');
@@ -155,7 +166,24 @@ final class PurchasingFlowTest extends KernelTestCase
             $entityManager->flush();
             self::assertSame('received', $order->getStatus());
             self::assertEqualsWithDelta($beforeIncoming, (float) $level->getIncomingQuantity(), 0.00001);
+            self::assertEqualsWithDelta($beforeOnHand + 60, (float) $level->getQuantity(), 0.00001);
+            self::assertEqualsWithDelta(12, (float) $level->getUnavailableQuantity(), 0.00001);
+
+            $inventory->disposeQuarantine(
+                $tenant,
+                $warehouse,
+                $product,
+                $receipt->getQuarantineQuantity(),
+                'returned',
+                null,
+                $receipt->getId()->toRfc4122(),
+                'Returned to supplier',
+                $entityManager,
+            );
+            $receipt->resolveQuarantine('returned', 'Returned to supplier');
+            $entityManager->flush();
             self::assertEqualsWithDelta($beforeOnHand + 48, (float) $level->getQuantity(), 0.00001);
+            self::assertEqualsWithDelta(0, (float) $level->getUnavailableQuantity(), 0.00001);
         } finally {
             $connection->rollBack();
             $entityManager->clear();

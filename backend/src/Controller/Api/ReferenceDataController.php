@@ -5,6 +5,7 @@ namespace App\Controller\Api;
 use App\Entity\DeliveryTime;
 use App\Entity\DeliveryTimeTranslation;
 use App\Entity\Locale;
+use App\Entity\SupplierOffer;
 use App\Entity\Tax;
 use App\Entity\TaxTranslation;
 use App\Entity\Tenant;
@@ -391,7 +392,8 @@ final class ReferenceDataController extends AbstractController
         EntityManagerInterface $entityManager,
         TranslatorInterface $translator,
     ): JsonResponse {
-        $unit = $this->unit($id, $this->tenant($entityManager, true), $entityManager);
+        $tenant = $this->tenant($entityManager, true);
+        $unit = $this->unit($id, $tenant, $entityManager);
         $data = $this->data($request);
         $code = strtolower(trim((string) ($data['code'] ?? '')));
         $symbol = trim((string) ($data['symbol'] ?? ''));
@@ -408,6 +410,10 @@ final class ReferenceDataController extends AbstractController
             );
         }
 
+        if ($code !== $unit->getCode() && $this->unitUsedByOffer($tenant, $unit->getCode(), $entityManager)) {
+            return $this->json(['message' => 'This unit is used by supplier offers. Keep its code or update the offers first.'], Response::HTTP_CONFLICT);
+        }
+
         $unit->update($code, $symbol, $labels, true);
         $this->saveUnitTranslations($unit, $labels, $entityManager);
         $entityManager->flush();
@@ -420,9 +426,12 @@ final class ReferenceDataController extends AbstractController
         string $id,
         EntityManagerInterface $entityManager,
     ): JsonResponse {
-        $entityManager->remove(
-            $this->unit($id, $this->tenant($entityManager, true), $entityManager),
-        );
+        $tenant = $this->tenant($entityManager, true);
+        $unit = $this->unit($id, $tenant, $entityManager);
+        if ($this->unitUsedByOffer($tenant, $unit->getCode(), $entityManager)) {
+            return $this->json(['message' => 'This unit is used by supplier offers and cannot be deleted.'], Response::HTTP_CONFLICT);
+        }
+        $entityManager->remove($unit);
         $entityManager->flush();
 
         return $this->json(null, Response::HTTP_NO_CONTENT);
@@ -793,5 +802,18 @@ final class ReferenceDataController extends AbstractController
         }
 
         return $membership->getTenant();
+    }
+
+    private function unitUsedByOffer(Tenant $tenant, string $code, EntityManagerInterface $entityManager): bool
+    {
+        return (int) $entityManager->createQueryBuilder()
+            ->select('COUNT(offer.id)')
+            ->from(SupplierOffer::class, 'offer')
+            ->where('offer.tenant = :tenant')
+            ->andWhere('offer.purchaseUnit = :code')
+            ->setParameter('tenant', $tenant)
+            ->setParameter('code', $code)
+            ->getQuery()
+            ->getSingleScalarResult() > 0;
     }
 }

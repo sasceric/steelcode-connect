@@ -16,6 +16,7 @@ type OrderLine = {
 }
 type Order = {
   id: string
+  reference: string
   supplierId: string
   supplierName: string
   warehouseId: string
@@ -36,7 +37,9 @@ type Receipt = {
   damagedQuantity: number
   damageResolution: 'open' | 'returned' | 'credited' | 'written_off' | 'replaced' | null
   damageResolutionNote: string | null
-  damageHistory: { from: string | null, to: string, note: string | null, at: string, userId: string | null }[]
+  damageHistory: { kind?: 'claim' | 'physical', from: string | null, to: string, note: string | null, at: string, userId: string | null }[]
+  quarantineQuantity: number
+  quarantineStatus: 'held' | 'released' | 'returned' | 'scrapped' | 'legacy_untracked' | null
   note: string | null
   createdAt: string
 }
@@ -45,10 +48,19 @@ type Offer = {
   productId: string
   productSku: string | null
   productName: string | null
+  variantCombination?: string | null
   supplierSku: string | null
-  unitCost: number
+  unitCost: number | null
   currency: string
   minimumQuantity: number
+  minimumOrderQuantity: number
+  prices: {
+    minimumQuantity: number
+    unitCost: number
+    currency: string
+    validFrom: string | null
+    validUntil: string | null
+  }[]
   purchaseUnit: string
   stockUnitsPerPurchaseUnit: number
   active: boolean
@@ -95,6 +107,21 @@ const resolvingReceipt = ref<Receipt | null>(null)
 const damageResolution = ref<'open' | 'returned' | 'credited' | 'written_off' | 'replaced'>('open')
 const damageNote = ref('')
 const resolving = ref(false)
+const quarantineReceipt = ref<Receipt | null>(null)
+const quarantineDisposition = ref<'released' | 'returned' | 'scrapped'>('returned')
+const quarantineNote = ref('')
+const quarantineSaving = ref(false)
+const quarantineOptions = computed(() => (
+  ['returned', 'scrapped', 'released'] as const
+).map(value => ({ value, label: t(`purchasing.quarantineStatus.${value}`) })))
+const closeQuarantine = () => {
+  quarantineReceipt.value = null
+}
+const historyLabel = (event: Receipt['damageHistory'][number]) => t(
+  event.kind === 'physical'
+    ? `purchasing.quarantineStatus.${event.to}`
+    : `purchasing.damageStatus.${event.to}`
+)
 const damageResolutionItems = computed(() => (
   ['open', 'returned', 'credited', 'written_off', 'replaced'] as const
 ).map(value => ({ value, label: t(`purchasing.damageStatus.${value}`) })))
@@ -108,6 +135,13 @@ const { data, status, refresh } = await useAsyncData('purchase-orders-page', () 
 const { data: warehousesData } = await useAsyncData('purchase-orders-warehouses', () =>
   apiFetch<{ warehouses: Warehouse[] }>('/inventory/warehouses')
 )
+const { data: currenciesData } = await useAsyncData('purchase-orders-currencies', () =>
+  apiFetch<{ currencies: { code: string, symbol: string }[] }>('/products/currencies')
+)
+const currencyItems = computed(() => (currenciesData.value?.currencies ?? []).map(currency => ({
+  label: `${currency.code} (${currency.symbol})`,
+  value: currency.code
+})))
 const warehouseItems = computed(() =>
   (warehousesData.value?.warehouses ?? []).filter(item => item.active).map(item => ({ label: item.name, value: item.id }))
 )
@@ -115,11 +149,29 @@ const offerItems = computed(() => {
   const all = [...Object.values(chosenOffers), ...offerOptions.value.filter(offer => !chosenOffers[offer.productId])]
   return all.map(offer => ({
     value: offer.productId,
-    label: `${offer.productName ?? offer.productSku ?? offer.productId} · ${offer.productSku ?? offer.supplierSku ?? ''}`
+    label: offer.productName ?? offer.productSku ?? offer.productId,
+    productName: offer.productName ?? offer.productSku ?? offer.productId,
+    productNumber: offer.productSku,
+    variantCombination: offer.variantCombination
   }))
 })
+const currentLocalDate = () => {
+  const now = new Date()
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`
+}
 const selectedOffers = computed(() => form.productIds.map(id => chosenOffers[id]).filter((offer): offer is Offer => !!offer))
-const totalCost = computed(() => selectedOffers.value.reduce((total, offer) => total + offer.unitCost * (quantities[offer.productId] ?? 0), 0))
+const tierFor = (offer: Offer) => {
+  const quantity = quantities[offer.productId] ?? 0
+  const today = currentLocalDate()
+  return offer.prices
+    .filter(price => price.currency === form.currency
+      && price.minimumQuantity <= quantity
+      && (!price.validFrom || price.validFrom <= today)
+      && (!price.validUntil || price.validUntil >= today))
+    .sort((a, b) => b.minimumQuantity - a.minimumQuantity)[0] ?? null
+}
+const totalCost = computed(() => selectedOffers.value.reduce((total, offer) =>
+  total + (tierFor(offer)?.unitCost ?? 0) * (quantities[offer.productId] ?? 0), 0))
 const loadOffers = async (reset = false) => {
   if ((offersLoading.value && !reset) || !form.supplierId) return
   if (reset) {
@@ -159,8 +211,14 @@ const syncSelectedOffers = (productIds: string[]) => {
     const offer = offerOptions.value.find(item => item.productId === id)
     if (offer) {
       chosenOffers[id] = offer
-      quantities[id] ??= offer.minimumQuantity
-      form.currency = offer.currency
+      if (Object.keys(chosenOffers).length === 1 && !editingOrder.value) form.currency = offer.currency
+      const today = currentLocalDate()
+      const firstCurrentTier = offer.prices
+        .filter(price => price.currency === form.currency
+          && (!price.validFrom || price.validFrom <= today)
+          && (!price.validUntil || price.validUntil >= today))
+        .sort((a, b) => a.minimumQuantity - b.minimumQuantity)[0]
+      quantities[id] ??= Math.max(offer.minimumOrderQuantity, firstCurrentTier?.minimumQuantity ?? 0)
     }
   })
 }
@@ -176,6 +234,12 @@ const openCreate = () => {
   Object.keys(quantities).forEach(key => delete quantities[key])
   offerOptions.value = []
   createOpen.value = true
+}
+const closeCreate = () => {
+  createOpen.value = false
+}
+const closeReceive = () => {
+  receiveOpen.value = false
 }
 const openEdit = (order: Order) => {
   editingOrder.value = order
@@ -198,6 +262,8 @@ const openEdit = (order: Order) => {
       unitCost: item.unitCost,
       currency: order.currency,
       minimumQuantity: 0,
+      minimumOrderQuantity: 0,
+      prices: [{ minimumQuantity: 0, unitCost: item.unitCost, currency: order.currency, validFrom: null, validUntil: null }],
       purchaseUnit: item.purchaseUnit,
       stockUnitsPerPurchaseUnit: item.stockUnitsPerPurchaseUnit,
       active: true
@@ -208,7 +274,8 @@ const openEdit = (order: Order) => {
   createOpen.value = true
 }
 const createOrder = async () => {
-  if (!form.supplierId || !form.warehouseId || selectedOffers.value.length === 0 || selectedOffers.value.some(offer => (quantities[offer.productId] ?? 0) < offer.minimumQuantity || offer.currency !== form.currency)) {
+  if (!form.supplierId || !form.warehouseId || selectedOffers.value.length === 0 || selectedOffers.value.some(offer =>
+    (quantities[offer.productId] ?? 0) < offer.minimumOrderQuantity || !tierFor(offer))) {
     notify.error(t('common.tryAgain'), t('purchasing.orderValidation'))
     return
   }
@@ -249,7 +316,7 @@ const downloadPdf = async (order: Order) => {
     const url = URL.createObjectURL(blob)
     const link = document.createElement('a')
     link.href = url
-    link.download = `purchase-order-${order.id.slice(-8)}.pdf`
+    link.download = `${order.reference}.pdf`
     link.click()
     window.setTimeout(() => URL.revokeObjectURL(url), 1000)
   } catch (error: unknown) {
@@ -276,6 +343,28 @@ const saveDamageResolution = async () => {
     notify.error(t('common.tryAgain'), error instanceof Error ? error.message : t('common.tryAgain'))
   } finally {
     resolving.value = false
+  }
+}
+const openQuarantine = (receipt: Receipt) => {
+  quarantineReceipt.value = receipt
+  quarantineDisposition.value = 'returned'
+  quarantineNote.value = ''
+}
+const saveQuarantine = async () => {
+  if (!currentOrder.value || !quarantineReceipt.value) return
+  quarantineSaving.value = true
+  try {
+    await apiFetch(`/inventory/purchase-orders/${currentOrder.value.id}/receipts/${quarantineReceipt.value.id}/quarantine`, {
+      method: 'POST',
+      body: { disposition: quarantineDisposition.value, note: quarantineNote.value }
+    })
+    quarantineReceipt.value = null
+    await openDetail(currentOrder.value)
+    notify.success(t('common.changesSaved'), t('purchasing.quarantineSaved'))
+  } catch (error: unknown) {
+    notify.error(t('common.tryAgain'), error instanceof Error ? error.message : t('common.tryAgain'))
+  } finally {
+    quarantineSaving.value = false
   }
 }
 const requestAction = (order: Order, action: 'send' | 'cancel' | 'email') => {
@@ -346,6 +435,7 @@ const orderActions = (order: Order) => [[
   ...(['draft', 'sent', 'partially_received'].includes(order.status) ? [{ label: t('purchasing.cancel'), icon: 'i-lucide-x', onSelect: () => requestAction(order, 'cancel') }] : [])
 ]]
 const columns: TableColumn<Order>[] = [
+  { accessorKey: 'reference', header: () => t('purchasing.reference'), cell: ({ row }) => h('button', { class: 'max-w-44 cursor-pointer truncate text-left font-medium text-highlighted hover:text-primary', title: row.original.reference, onClick: () => openDetail(row.original) }, row.original.reference) },
   { accessorKey: 'createdAt', header: () => t('inventoryTransfers.date'), cell: ({ row }) => new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(row.original.createdAt)) },
   { accessorKey: 'supplierName', header: () => t('suppliers.name'), cell: ({ row }) => h('button', { class: 'cursor-pointer font-medium text-highlighted hover:text-primary', onClick: () => openDetail(row.original) }, row.original.supplierName) },
   { accessorKey: 'warehouseName', header: () => t('inventory.warehouse') },
@@ -369,6 +459,7 @@ const receiptColumns: TableColumn<Receipt>[] = [
   { accessorKey: 'goodQuantity', header: () => t('purchasing.received') },
   { accessorKey: 'damagedQuantity', header: () => t('purchasing.damaged') },
   { accessorKey: 'damageResolution', header: () => t('purchasing.damageResolution'), cell: ({ row }) => row.original.damageResolution ? h('button', { class: 'cursor-pointer text-primary', onClick: () => openDamageResolution(row.original) }, t(`purchasing.damageStatus.${row.original.damageResolution}`)) : '—' },
+  { accessorKey: 'quarantineStatus', header: () => t('purchasing.physicalStock'), cell: ({ row }) => row.original.quarantineStatus === 'held' ? h('button', { class: 'cursor-pointer text-primary', onClick: () => openQuarantine(row.original) }, `${t('purchasing.quarantineStatus.held')} · ${row.original.quarantineQuantity}`) : row.original.quarantineStatus ? t(`purchasing.quarantineStatus.${row.original.quarantineStatus}`) : '—' },
   { accessorKey: 'note', header: () => t('inventory.note') }
 ]
 let offerSearchTimer: ReturnType<typeof setTimeout> | undefined
@@ -437,6 +528,14 @@ onBeforeUnmount(() => clearTimeout(offerSearchTimer))
               :search-placeholder="t('inventoryTransfers.searchWarehouses')"
             />
           </UFormField>
+          <UFormField :label="t('purchasing.currency')">
+            <USelect
+              v-model="form.currency"
+              :items="currencyItems"
+              value-key="value"
+              class="w-full"
+            />
+          </UFormField>
         </div>
         <UFormField :label="t('inventoryTransfers.products')">
           <SearchableSelect
@@ -455,8 +554,8 @@ onBeforeUnmount(() => clearTimeout(offerSearchTimer))
         </UFormField>
         <div v-for="offer in selectedOffers" :key="offer.id" class="grid grid-cols-[minmax(0,1fr)_7rem_7rem_auto] items-center gap-2 rounded-md border border-default p-2">
           <span class="truncate text-sm">{{ offer.productSku ?? offer.supplierSku }} · {{ offer.purchaseUnit }} × {{ offer.stockUnitsPerPurchaseUnit }}</span>
-          <UInput v-model.number="quantities[offer.productId]" type="number" :min="offer.minimumQuantity" step="0.0001" />
-          <span class="text-right text-sm">{{ offer.unitCost.toFixed(2) }} {{ offer.currency }}</span>
+          <UInput v-model.number="quantities[offer.productId]" type="number" :min="offer.minimumOrderQuantity" step="0.0001" />
+          <span class="text-right text-sm">{{ tierFor(offer) ? `${tierFor(offer)?.unitCost.toFixed(2)} ${form.currency}` : '—' }}</span>
           <UButton icon="i-lucide-x" color="neutral" variant="ghost" @click="removeProduct(offer.productId)" />
         </div>
         <p v-if="selectedOffers.length" class="text-right text-sm font-medium">
@@ -466,7 +565,7 @@ onBeforeUnmount(() => clearTimeout(offerSearchTimer))
           <UTextarea v-model="form.note" class="w-full" />
         </UFormField>
         <div class="flex justify-end gap-2">
-          <UButton :label="t('common.cancel')" color="neutral" variant="subtle" @click="createOpen = false" />
+          <UButton :label="t('common.cancel')" color="neutral" variant="subtle" @click="closeCreate" />
           <UButton :label="t(editingOrder ? 'common.save' : 'common.create')" type="submit" :loading="saving" />
         </div>
       </UForm>
@@ -476,6 +575,7 @@ onBeforeUnmount(() => clearTimeout(offerSearchTimer))
   <UModal v-model:open="detailOpen" :title="t('purchasing.orderDetail')" :ui="{ content: 'sm:max-w-4xl' }">
     <template #body>
       <div v-if="currentOrder" class="space-y-4">
+        <p class="text-sm font-semibold text-highlighted">{{ currentOrder.reference }}</p>
         <p class="text-sm text-muted">
           {{ currentOrder.supplierName }} · {{ currentOrder.warehouseName }} · {{ currentOrder.currency }}
         </p>
@@ -564,12 +664,41 @@ onBeforeUnmount(() => clearTimeout(offerSearchTimer))
             v-for="(event, index) in resolvingReceipt.damageHistory"
             :key="index"
           >
-            {{ new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(event.at)) }} · {{ t(`purchasing.damageStatus.${event.to}`) }}{{ event.note ? ` — ${event.note}` : '' }}
+            {{ new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(event.at)) }} · {{ historyLabel(event) }}{{ event.note ? ` — ${event.note}` : '' }}
           </p>
         </div>
         <div class="flex justify-end gap-2">
           <UButton :label="t('common.cancel')" color="neutral" variant="subtle" @click="closeDamageResolution" />
           <UButton :label="t('purchasing.saveResolution')" type="submit" :loading="resolving" />
+        </div>
+      </UForm>
+    </template>
+  </UModal>
+
+  <UModal
+    :open="!!quarantineReceipt"
+    :title="t('purchasing.resolveQuarantine')"
+    @update:open="closeQuarantine"
+  >
+    <template #body>
+      <UForm class="space-y-4" @submit.prevent="saveQuarantine">
+        <p class="text-sm text-muted">
+          {{ quarantineReceipt?.sku }} · {{ quarantineReceipt?.quarantineQuantity }} {{ t('purchasing.stockUnits') }}
+        </p>
+        <p class="text-sm text-muted">{{ t('purchasing.quarantineDescription') }}</p>
+        <UFormField :label="t('purchasing.physicalStock')">
+          <SearchableSelect
+            v-model="quarantineDisposition"
+            :items="quarantineOptions"
+            :search-placeholder="t('purchasing.physicalStock')"
+          />
+        </UFormField>
+        <UFormField :label="t('inventory.note')">
+          <UTextarea v-model="quarantineNote" class="w-full" />
+        </UFormField>
+        <div class="flex justify-end gap-2">
+          <UButton :label="t('common.cancel')" color="neutral" variant="subtle" @click="closeQuarantine" />
+          <UButton :label="t('purchasing.saveDisposition')" type="submit" :loading="quarantineSaving" />
         </div>
       </UForm>
     </template>
@@ -591,7 +720,7 @@ onBeforeUnmount(() => clearTimeout(offerSearchTimer))
           <UTextarea v-model="receiptNote" class="w-full" />
         </UFormField>
         <div class="flex justify-end gap-2">
-          <UButton :label="t('common.cancel')" color="neutral" variant="subtle" @click="receiveOpen = false" />
+          <UButton :label="t('common.cancel')" color="neutral" variant="subtle" @click="closeReceive" />
           <UButton :label="t('purchasing.receive')" type="submit" :loading="saving" />
         </div>
       </UForm>

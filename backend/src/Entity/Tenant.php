@@ -43,6 +43,9 @@ class Tenant
     #[ORM\Column(length: 10, options: ['default' => 'en-GB'])]
     private string $defaultSnippetLocale = 'en-GB';
 
+    #[ORM\Column(options: ['default' => 10000])]
+    private int $nextProductNumber = 10000;
+
     /** @var list<string> */
     #[ORM\Column(type: 'json', options: ['default' => '["bs-BA", "de-DE", "en-GB"]'])]
     private array $enabledSnippetLocales = ['bs-BA', 'de-DE', 'en-GB'];
@@ -137,6 +140,19 @@ class Tenant
     public function setDefaultSnippetLocale(string $locale): void
     {
         $this->defaultSnippetLocale = $locale;
+    }
+
+    public function getNextProductNumber(): int
+    {
+        return $this->nextProductNumber;
+    }
+
+    public function claimNextProductNumber(): int
+    {
+        $productNumber = $this->nextProductNumber;
+        $this->nextProductNumber++;
+
+        return $productNumber;
     }
 
     /** @return list<string> */

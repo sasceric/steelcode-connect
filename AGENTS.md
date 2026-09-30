@@ -1,5 +1,21 @@
 # SteelCode Connect agent rules
 
+## Product architecture and tenant isolation
+
+- Keep the full product picture in mind: SteelCode Connect is a multi-tenant
+  SaaS, not a single-company application.
+- Every new business resource, query, API action, background job, import,
+  export, file path, integration credential, cache key, and audit record must
+  be resolved and scoped through the active tenant. Never rely on a client
+  supplied identifier as the only tenant boundary.
+- Preserve a modular-monolith, tenant-aware design that can later route a
+  tenant to a database shard, dedicated workers, or a dedicated instance
+  without rewriting the domain workflows. Do not introduce those operational
+  layers prematurely.
+- Prefer shared reusable components and workflows. Design for real business
+  use, performance at scale, safe concurrency, and clear operational history;
+  do not optimize only for the currently visible screen.
+
 ## Vue and Nuxt formatting
 
 - Keep Vue templates readable and consistently multiline. Do not compress nested

@@ -241,6 +241,7 @@ type ProductCategory = {
   parentId: string | null
   name: string
   position: number
+  hasChildren?: boolean
   translations: Record<string, { name: string }>
 }
 
@@ -379,17 +380,21 @@ const updateName = (value: string) => {
 }
 
 const { data: localesData } = await useAsyncData('product-locales', () =>
-  apiFetch<{ locales: Locale[] }>('/products/locales')
+  apiFetch<{ locales: Locale[] }>('/products/locales'),
+  { lazy: true }
 )
 const { data: catalogueReferencesData } = await useAsyncData('catalogue-references', () =>
-  apiFetch<CatalogueReferences>('/catalogue/references')
+  apiFetch<CatalogueReferences>('/catalogue/references'),
+  { lazy: true }
 )
 const { data: manufacturersData } = await useAsyncData('product-manufacturers', () =>
-  apiFetch<{ manufacturers: { id: string, name: string, translations: Record<string, { name: string }> }[] }>('/manufacturers')
+  apiFetch<{ manufacturers: { id: string, name: string, translations: Record<string, { name: string }> }[] }>('/manufacturers'),
+  { lazy: true }
 )
 const { data: productReferencesData } = await useAsyncData(
   `product-references-${route.params.id}`,
-  () => apiFetch<ProductReferences>(`/products/${route.params.id}/references`)
+  () => apiFetch<ProductReferences>(`/products/${route.params.id}/references`),
+  { lazy: true }
 )
 const catalogueReferences = computed(() => catalogueReferencesData.value)
 const manufacturers = computed(() => manufacturersData.value?.manufacturers ?? [])
@@ -462,18 +467,19 @@ const {
   apiFetch<{
     variants: Variant[]
     pagination: { total: number }
-  }>(variantsUrl.value),
-  { immediate: false }
+  }>(variantsUrl.value)
 )
 const variants = computed(() => variantsData.value?.variants ?? [])
 const variantsTotal = computed(() => variantsData.value?.pagination.total ?? 0)
 const { data: optionGroupsData, refresh: refreshOptionGroups } = await useAsyncData(
   `product-options-${route.params.id}`,
-  () => apiFetch<{ optionGroups: OptionGroup[] }>(`/products/${route.params.id}/option-groups`)
+  () => apiFetch<{ optionGroups: OptionGroup[] }>(`/products/${route.params.id}/option-groups`),
+  { lazy: true }
 )
 const optionGroups = computed(() => optionGroupsData.value?.optionGroups ?? [])
 const { data: customFieldSetsData } = await useAsyncData('product-custom-field-sets', () =>
-  apiFetch<{ sets: CustomFieldSet[], unassignedFields: CustomField[] }>('/custom-field-sets')
+  apiFetch<{ sets: CustomFieldSet[], unassignedFields: CustomField[] }>('/custom-field-sets'),
+  { lazy: true }
 )
 const customFieldSets = computed(() =>
   (customFieldSetsData.value?.sets ?? []).filter(set => set.relations.includes('product'))
@@ -500,7 +506,8 @@ const {
 } = await useAsyncData(`product-sales-channels-${route.params.id}`, () =>
   apiFetch<{ channels: ProductSalesChannel[] }>(
     `/products/${route.params.id}/channel-publications`
-  )
+  ),
+  { lazy: true }
 )
 const productSalesChannels = computed(() => productSalesChannelsData.value?.channels ?? [])
 const salesChannelVisibilityOptions = computed(() => [
@@ -555,11 +562,13 @@ const {
 const crossSellings = computed(() => crossSellingsData.value?.crossSellings ?? [])
 const { data: tagsData, refresh: refreshTags } = await useAsyncData(
   `product-tags-${route.params.id}`,
-  () => apiFetch<{ tags: Tag[] }>(`/products/${route.params.id}/tags`)
+  () => apiFetch<{ tags: Tag[] }>(`/products/${route.params.id}/tags`),
+  { lazy: true }
 )
 const { data: inventoryData, refresh: refreshInventory } = await useAsyncData(
   `product-inventory-${route.params.id}`,
-  () => apiFetch<ProductInventory>(`/inventory/products/${route.params.id}`)
+  () => apiFetch<ProductInventory>(`/inventory/products/${route.params.id}`),
+  { lazy: true }
 )
 const inventory = computed(() =>
   inventoryData.value ?? {
@@ -592,13 +601,15 @@ const { data: inventoryMovementsData, refresh: refreshInventoryMovements } = awa
 const inventoryMovements = computed(() => inventoryMovementsData.value?.movements ?? [])
 const movementsTotal = computed(() => inventoryMovementsData.value?.pagination.total ?? 0)
 const { data: warehousesData } = await useAsyncData('inventory-warehouses', () =>
-  apiFetch<{ warehouses: Warehouse[] }>('/inventory/warehouses')
+  apiFetch<{ warehouses: Warehouse[] }>('/inventory/warehouses'),
+  { lazy: true }
 )
 const warehouses = computed(
   () => warehousesData.value?.warehouses?.filter(warehouse => warehouse.active) ?? []
 )
 const { data: propertyGroupsData } = await useAsyncData('catalogue-property-groups', () =>
-  apiFetch<{ propertyGroups: CataloguePropertyGroup[] }>('/property-groups')
+  apiFetch<{ propertyGroups: CataloguePropertyGroup[] }>('/property-groups'),
+  { lazy: true }
 )
 const propertyGroups = computed(() => propertyGroupsData.value?.propertyGroups ?? [])
 const propertyGroupTranslations = ref<Record<string, PropertyGroupTranslation>>({})
@@ -620,18 +631,33 @@ const localizedPropertyGroups = computed(() =>
 )
 const { data: selectedPropertiesData, refresh: refreshSelectedProperties } = await useAsyncData(
   `product-properties-${route.params.id}`,
-  () => apiFetch<{ propertyIds: string[] }>(`/products/${route.params.id}/properties`)
+  () => apiFetch<{ propertyIds: string[] }>(`/products/${route.params.id}/properties`),
+  { lazy: true }
 )
 const { data: categoriesData } = await useAsyncData('product-category-tree', () =>
-  apiFetch<{ categories: ProductCategory[] }>('/categories')
+  apiFetch<{ categories: ProductCategory[] }>('/categories?parentId='),
+  { lazy: true }
 )
 const { data: selectedCategoriesData, refresh: refreshSelectedCategories } = await useAsyncData(
   `product-categories-${route.params.id}`,
-  () => apiFetch<{ categoryIds: string[] }>(`/products/${route.params.id}/categories`)
+  () => apiFetch<{ categoryIds: string[] }>(`/products/${route.params.id}/categories`),
+  { lazy: true }
 )
+const assignedCategories = ref<ProductCategory[]>([])
+const loadAssignedCategories = async () => {
+  if (!selectedCategoryIds.value.length) {
+    assignedCategories.value = []
+    return
+  }
+
+  const { categories } = await apiFetch<{ categories: ProductCategory[] }>(
+    `/categories?ids=${selectedCategoryIds.value.join(',')}`
+  )
+  assignedCategories.value = categories
+}
 const selectedCategoryLabels = computed(() => {
   const names = new Map(
-    (categoriesData.value?.categories ?? []).map(category => [
+    assignedCategories.value.map(category => [
       category.id,
       category.translations[selectedLocale.value]?.name
       || category.translations[defaultLocale.value]?.name
@@ -647,15 +673,20 @@ watch(
   },
   { immediate: true }
 )
+watch(selectedCategoryIds, () => {
+  void loadAssignedCategories()
+}, { deep: true, immediate: true })
 const { data: variantOptionsData, refresh: refreshVariantOptions } = await useAsyncData(
   `product-variant-options-${route.params.id}`,
   () =>
     apiFetch<{
       optionGroups: { propertyGroupId: string, propertyIds: string[] }[]
-    }>(`/products/${route.params.id}/variant-options`)
+    }>(`/products/${route.params.id}/variant-options`),
+  { lazy: true }
 )
 const { data: currenciesData } = await useAsyncData('product-currencies', () =>
-  apiFetch<{ currencies: Currency[] }>('/products/currencies')
+  apiFetch<{ currencies: Currency[] }>('/products/currencies'),
+  { lazy: true }
 )
 const currencies = computed(() =>
   currenciesData.value?.currencies?.length
@@ -945,7 +976,15 @@ const inventoryLevelColumns: TableColumn<InventoryLevel>[] = [
   {
     accessorKey: 'warehouse',
     header: () => t('inventory.warehouse'),
-    cell: ({ row }) => h('span', { class: 'font-medium text-highlighted' }, row.original.warehouse)
+    cell: ({ row }) =>
+      h(
+        'button',
+        {
+          class: 'cursor-pointer font-medium text-highlighted hover:text-primary',
+          onClick: () => navigateTo(`/inventory/warehouses/${row.original.warehouseId}`)
+        },
+        row.original.warehouse
+      )
   },
   { accessorKey: 'stock', header: () => t('inventory.stock') },
   { accessorKey: 'reservedStock', header: () => t('inventory.reservedStock') },
@@ -2776,6 +2815,26 @@ const toggleAdvancedPriceChain = (row: AdvancedRow, kind: 'price' | 'list' | 'ch
         :title="t('inventoryMovements.title')"
         :description="t('inventoryMovements.description')"
       >
+        <div class="mb-6">
+          <p class="mb-3 text-sm font-medium text-highlighted">
+            {{ t('inventory.stockByWarehouse') }}
+          </p>
+          <AppDataTable
+            :data="inventory.levels"
+            :columns="inventoryLevelColumns"
+            :get-row-id="(row) => row.warehouseId"
+            :max-height="null"
+            table-key="product-stock-movement-levels"
+            :column-labels="{
+              warehouse: t('inventory.warehouse'),
+              stock: t('inventory.stock'),
+              reservedStock: t('inventory.reservedStock'),
+              unavailableStock: t('inventory.unavailableStock'),
+              availableStock: t('inventory.availableStock'),
+              incomingStock: t('inventory.incomingStock')
+            }"
+          />
+        </div>
         <div v-if="!movementsTotal" class="py-12 text-center text-sm text-muted">
           {{ t('inventoryMovements.empty') }}
         </div>

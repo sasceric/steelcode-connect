@@ -360,6 +360,123 @@ final class InventoryController extends AbstractController
         ]);
     }
 
+    #[Route('/warehouses/{id}/stock', methods: ['GET'])]
+    public function warehouseStock(
+        string $id,
+        Request $request,
+        EntityManagerInterface $entityManager,
+    ): JsonResponse {
+        $tenant = $this->tenant($entityManager);
+        $warehouse = $this->warehouse($id, $tenant, $entityManager);
+        $page = max(1, $request->query->getInt('page', 1));
+        $limit = min(100, max(1, $request->query->getInt('limit', 25)));
+        $search = trim((string) $request->query->get('search', ''));
+        $sort = (string) $request->query->get('sort', 'name');
+        $direction = strtoupper((string) $request->query->get('direction', 'ASC')) === 'DESC' ? 'DESC' : 'ASC';
+        $locale = $entityManager->getRepository(Locale::class)->findOneBy([
+            'code' => $tenant->getDefaultSnippetLocale(),
+            'active' => true,
+        ]);
+        $query = $entityManager->createQueryBuilder()
+            ->select('level', 'product')
+            ->from(InventoryLevel::class, 'level')
+            ->join('level.product', 'product')
+            ->where('level.tenant = :tenant')
+            ->andWhere('level.warehouse = :warehouse')
+            ->setParameter('tenant', $tenant)
+            ->setParameter('warehouse', $warehouse);
+        if ($search !== '') {
+            $query
+                ->andWhere(
+                    'LOWER(COALESCE(product.sku, \'\')) LIKE :search OR EXISTS ('
+                    .'SELECT 1 FROM '.ProductTranslation::class.' searchTranslation '
+                    .'WHERE searchTranslation.product = product AND LOWER(searchTranslation.name) LIKE :search'
+                    .')',
+                )
+                ->setParameter('search', '%'.mb_strtolower($search).'%');
+        }
+        $sortField = match ($sort) {
+            'sku' => 'product.sku',
+            'stock' => 'level.quantity',
+            'availableStock' => 'level.quantity - level.reservedQuantity - level.unavailableQuantity',
+            'reservedStock' => 'level.reservedQuantity',
+            'unavailableStock' => 'level.unavailableQuantity',
+            'incomingStock' => 'level.incomingQuantity',
+            default => 'sortName',
+        };
+        if ($locale instanceof Locale) {
+            $query
+                ->addSelect('sortTranslation.name AS HIDDEN sortName')
+                ->leftJoin(
+                    ProductTranslation::class,
+                    'sortTranslation',
+                    'WITH',
+                    'sortTranslation.product = product AND sortTranslation.locale = :locale',
+                )
+                ->setParameter('locale', $locale);
+        } elseif ($sortField === 'sortName') {
+            $sortField = 'product.sku';
+        }
+        $levels = $query
+            ->orderBy($sortField, $direction)
+            ->setMaxResults($limit)
+            ->setFirstResult(($page - 1) * $limit)
+            ->getQuery()
+            ->getResult();
+        $products = array_map(fn (InventoryLevel $level) => $level->getProduct(), $levels);
+        $names = [];
+        if ($locale instanceof Locale && $products !== []) {
+            foreach ($entityManager->getRepository(ProductTranslation::class)->findBy([
+                'locale' => $locale,
+                'product' => $products,
+            ]) as $translation) {
+                $names[$translation->getProduct()->getId()->toRfc4122()] = $translation->getName();
+            }
+        }
+        $count = $entityManager->createQueryBuilder()
+            ->select('COUNT(level.id)')
+            ->from(InventoryLevel::class, 'level')
+            ->join('level.product', 'product')
+            ->where('level.tenant = :tenant')
+            ->andWhere('level.warehouse = :warehouse')
+            ->setParameter('tenant', $tenant)
+            ->setParameter('warehouse', $warehouse);
+        if ($search !== '') {
+            $count
+                ->andWhere(
+                    'LOWER(COALESCE(product.sku, \'\')) LIKE :search OR EXISTS ('
+                    .'SELECT 1 FROM '.ProductTranslation::class.' searchTranslation '
+                    .'WHERE searchTranslation.product = product AND LOWER(searchTranslation.name) LIKE :search'
+                    .')',
+                )
+                ->setParameter('search', '%'.mb_strtolower($search).'%');
+        }
+        $total = (int) $count->getQuery()->getSingleScalarResult();
+
+        return $this->json([
+            'warehouse' => $this->warehousePayload($warehouse),
+            'items' => array_map(
+                fn (InventoryLevel $level) => [
+                    'productId' => $level->getProduct()->getId()->toRfc4122(),
+                    'name' => $names[$level->getProduct()->getId()->toRfc4122()] ?? '',
+                    'sku' => $level->getProduct()->getSku(),
+                    'stock' => (float) $level->getQuantity(),
+                    'reservedStock' => (float) $level->getReservedQuantity(),
+                    'unavailableStock' => (float) $level->getUnavailableQuantity(),
+                    'availableStock' => (float) $level->getAvailableQuantity(),
+                    'incomingStock' => (float) $level->getIncomingQuantity(),
+                ],
+                $levels,
+            ),
+            'pagination' => [
+                'page' => $page,
+                'limit' => $limit,
+                'total' => $total,
+                'hasMore' => $page * $limit < $total,
+            ],
+        ]);
+    }
+
     #[Route('/transfers/{id}/send', methods: ['POST'])]
     public function sendTransfer(string $id, EntityManagerInterface $entityManager): JsonResponse
     {
@@ -592,6 +709,23 @@ final class InventoryController extends AbstractController
                 return $this->json(['message' => 'A product may appear only once in a transfer.'], Response::HTTP_UNPROCESSABLE_ENTITY);
             }
             $seenProducts[$productId] = true;
+            $level = $entityManager->getRepository(InventoryLevel::class)->findOneBy([
+                'tenant' => $tenant,
+                'warehouse' => $source,
+                'product' => $product,
+            ]);
+            $available = $level instanceof InventoryLevel ? (float) $level->getAvailableQuantity() : 0;
+            $requested = (float) $item['quantity'];
+            if ($requested > $available) {
+                return $this->json([
+                    'message' => sprintf(
+                        'Insufficient available stock for %s: %s available, %s requested.',
+                        $product->getSku() ?? $productId,
+                        number_format($available, 4, '.', ''),
+                        number_format($requested, 4, '.', ''),
+                    ),
+                ], Response::HTTP_UNPROCESSABLE_ENTITY);
+            }
             $transfer->addItem(
                 $product,
                 number_format((float) $item['quantity'], 4, '.', ''),
@@ -914,7 +1048,9 @@ return $warehouse;
         return [
             'id' => $transfer->getId()->toRfc4122(),
             'status' => $transfer->getStatus(),
+            'sourceWarehouseId' => $transfer->getSourceWarehouse()->getId()->toRfc4122(),
             'sourceWarehouse' => $transfer->getSourceWarehouse()->getName(),
+            'destinationWarehouseId' => $transfer->getDestinationWarehouse()->getId()->toRfc4122(),
             'destinationWarehouse' => $transfer->getDestinationWarehouse()->getName(),
             'note' => $transfer->getNote(),
             'createdAt' => $transfer->getCreatedAt()->format(DATE_ATOM),

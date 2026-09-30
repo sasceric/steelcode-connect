@@ -74,7 +74,7 @@ class PurchaseOrder
         string $unitCost,
         ?string $supplierSku,
         string $purchaseUnit = 'unit',
-        int $stockUnitsPerPurchaseUnit = 1,
+        string|int $stockUnitsPerPurchaseUnit = 1,
     ): void
     {
         $this->items->add(new PurchaseOrderItem(
@@ -137,6 +137,11 @@ class PurchaseOrder
     public function getId(): Uuid
     {
         return $this->id;
+    }
+
+    public function getReference(): string
+    {
+        return 'PO-'.$this->createdAt->format('Ymd').'-'.strtoupper(str_replace('-', '', $this->id->toRfc4122()));
     }
 
     public function getTenant(): Tenant

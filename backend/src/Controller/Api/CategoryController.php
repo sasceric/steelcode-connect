@@ -35,14 +35,42 @@ final class CategoryController extends AbstractController
     {
         $tenant = $this->tenant($em);
         $criteria = ['tenant' => $tenant];
-        if ($request->query->has('parentId')) {
+        $search = trim((string) $request->query->get('search', ''));
+        $requestedIds = array_filter(
+            explode(',', (string) $request->query->get('ids', '')),
+            static fn (string $id): bool => Uuid::isValid($id),
+        );
+
+        if ($requestedIds !== []) {
+            $criteria['id'] = array_map(
+                static fn (string $id): Uuid => Uuid::fromString($id),
+                $requestedIds,
+            );
+        }
+
+        if ($request->query->has('parentId') && $requestedIds === [] && $search === '') {
             $parent = $this->parentForCreate($request->query->get('parentId'), $tenant, $em);
             if ($parent === false) {
                 return $this->invalid();
             }
             $criteria['parent'] = $parent;
         }
-        $categories = $em->getRepository(Category::class)->findBy($criteria, ['position' => 'ASC']);
+
+        if ($search !== '') {
+            $categories = $em->createQuery(
+                'SELECT DISTINCT category
+                 FROM App\\Entity\\Category category
+                 INNER JOIN App\\Entity\\CategoryTranslation translation WITH translation.category = category
+                 WHERE category.tenant = :tenant
+                   AND LOWER(translation.name) LIKE :search
+                 ORDER BY category.position ASC',
+            )
+                ->setParameter('tenant', $tenant)
+                ->setParameter('search', '%' . mb_strtolower($search) . '%')
+                ->getResult();
+        } else {
+            $categories = $em->getRepository(Category::class)->findBy($criteria, ['position' => 'ASC']);
+        }
         $parentIdsWithChildren = $this->parentIdsWithChildren($categories, $tenant, $em);
 
         return $this->json(['categories' => array_map(

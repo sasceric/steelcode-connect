@@ -14,7 +14,7 @@ const pageSizeItems = [25, 50, 100].map(value => ({
 </script>
 
 <template>
-  <div class="flex flex-wrap items-center justify-between gap-3 border-t border-default !py-2">
+  <div class="flex flex-wrap items-center justify-between gap-3 !py-2">
     <div class="flex flex-wrap items-center gap-2 text-sm text-muted">
       <span>{{ t('common.rowsPerPage') }}</span>
       <USelect

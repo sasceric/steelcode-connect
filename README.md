@@ -4,6 +4,8 @@ SteelCode Connect is a multi-tenant commerce integration hub. It provides a cent
 
 The product architecture and MVP scope are described in [the technical specification](docs/steelcode-connect-technical-specification.md). For the current delivered scope and prioritized remaining work, see the [implementation status](docs/implementation-status.md).
 
+For step-by-step purchasing, warehouse, customer, order and Shopware synchronization workflows, read the [Inventory and Sales operating guide](docs/inventory-and-sales-guide.md). It explains stock effects, setup/cutover, daily operations, exceptions and current release boundaries.
+
 ## Stack
 
 - Frontend: Nuxt 4, Vue 3, TypeScript, Nuxt UI, Tailwind CSS and Pinia
@@ -131,6 +133,8 @@ Run the background import worker in a separate terminal whenever you import cata
 
     cd backend
     composer imports:consume
+
+The worker also runs the scheduler for incremental Shopware Sales synchronization and stock-outbox dispatch. Read the [Shopware Sales and inventory cutover guide](docs/shopware-sales-inventory-cutover.md) before enabling ongoing order sync or Connect-owned stock.
 
 The import worker intentionally runs with Symfony debug and Doctrine query profiling disabled. A large catalogue produces thousands of queries; keeping the dev profiler active retains those queries in memory and can terminate the worker. The import screen queues one Shopware catalogue run and shows its current phase while this worker is running. An active or queued run can be cancelled from either the import page or its persistent progress card; work stops after the current item and already imported records are retained. The dependency order is sales channels, currencies, units, tags, taxes, delivery times, manufacturers, property groups and values, custom-field definitions and categories; products, variants, prices, media assignments and translations follow, then canonical Shopware SEO URLs and product downloads/cross-selling. The Shopware integration needs read permission for `seo_url`, `language`, `locale`, `sales_channel`, `product-download` and `product-cross-selling` to import the complete catalogue.
 

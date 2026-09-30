@@ -4,14 +4,19 @@ import type { TableColumn } from '@nuxt/ui'
 type Transfer = {
   id: string
   status: 'draft' | 'in_transit' | 'received' | 'cancelled'
+  sourceWarehouseId: string
   sourceWarehouse: string
+  destinationWarehouseId: string
   destinationWarehouse: string
   note: string | null
   createdAt: string
   items: { productId: string, sku: string | null, quantity: number }[]
 }
 type Warehouse = { id: string, name: string, active: boolean }
-type ProductOption = { id: string, name: string, sku: string | null }
+type ProductOption = { id: string, name: string, sku: string | null, variantCombination?: string | null }
+type ProductStock = {
+  levels: { warehouseId: string, availableStock: number }[]
+}
 
 const { t } = useI18n()
 const notify = useAppToast()
@@ -39,6 +44,8 @@ const selectedOptions = reactive<Record<string, ProductOption>>({})
 const productHasMore = ref(false)
 const productsLoading = ref(false)
 let productRequestId = 0
+const availabilityLoading = ref(false)
+const availableByProductId = ref<Record<string, number>>({})
 const page = ref(1)
 const pageSize = ref(25)
 const listUrl = computed(() => `/inventory/transfers?page=${page.value}&limit=${pageSize.value}`)
@@ -54,9 +61,23 @@ const warehouseItems = computed(() =>
 )
 const productItems = computed(() =>
   [...Object.values(selectedOptions), ...productOptions.value.filter(product => !selectedOptions[product.id])]
-    .map(product => ({ label: product.sku ? `${product.name} · ${product.sku}` : product.name, value: product.id }))
+    .map(product => ({
+      label: product.name,
+      productName: product.name,
+      productNumber: product.sku,
+      variantCombination: product.variantCombination,
+      value: product.id
+    }))
 )
 const selectedProducts = computed(() => transferForm.productIds.map(id => selectedOptions[id]).filter((product): product is ProductOption => !!product))
+const exceedsAvailableStock = (productId: string, quantity: number) => {
+  const available = availableByProductId.value[productId]
+
+  return available !== undefined && quantity > available
+}
+const insufficientSelectedProducts = computed(() => selectedProducts.value.filter(product =>
+  exceedsAvailableStock(product.id, quantities[product.id] || 1)
+))
 const loadProducts = async (reset = false) => {
   if (productsLoading.value && !reset) return
   if (reset) {
@@ -67,7 +88,7 @@ const loadProducts = async (reset = false) => {
   const currentRequest = productRequestId
   productsLoading.value = true
   try {
-    const params = new URLSearchParams({ view: 'options', limit: '25', page: String(productPage.value), sort: 'name', direction: 'ASC' })
+    const params = new URLSearchParams({ view: 'options', includeVariants: '1', limit: '25', page: String(productPage.value), sort: 'name', direction: 'ASC' })
     if (productSearch.value) params.set('search', productSearch.value)
     const response = await apiFetch<{ products: ProductOption[], pagination?: { hasMore: boolean } }>(`/products?${params}`)
     if (currentRequest !== productRequestId) return
@@ -83,6 +104,33 @@ const removeProduct = (productId: string) => {
   delete quantities[productId]
   delete selectedOptions[productId]
 }
+const loadAvailableStock = async (warehouseId: string, productIds: string[]) => {
+  if (!warehouseId || !productIds.length) {
+    availableByProductId.value = {}
+    return
+  }
+
+  availabilityLoading.value = true
+  try {
+    const stock = await Promise.all(productIds.map(async (productId) => {
+      const response = await apiFetch<ProductStock>(`/inventory/products/${productId}`)
+      const level = response.levels.find(item => item.warehouseId === warehouseId)
+
+      return [productId, level?.availableStock ?? 0] as const
+    }))
+    availableByProductId.value = Object.fromEntries(stock)
+  } finally {
+    availabilityLoading.value = false
+  }
+}
+const transferErrorMessage = (error: unknown) => {
+  if (typeof error === 'object' && error !== null && 'data' in error) {
+    const data = (error as { data?: { message?: unknown } }).data
+    if (typeof data?.message === 'string') return data.message
+  }
+
+  return error instanceof Error ? error.message : t('common.tryAgain')
+}
 const openCreate = () => {
   Object.assign(transferForm, { sourceWarehouseId: '', destinationWarehouseId: '', productIds: [], note: '' })
   Object.keys(quantities).forEach(key => delete quantities[key])
@@ -97,6 +145,15 @@ const createTransfer = async () => {
   }
   creating.value = true
   try {
+    await loadAvailableStock(transferForm.sourceWarehouseId, transferForm.productIds)
+    if (insufficientSelectedProducts.value.length) {
+      const products = insufficientSelectedProducts.value
+        .map(product => `${product.sku || product.name} (${availableByProductId.value[product.id] ?? 0} available, ${quantities[product.id] || 1} requested)`)
+        .join(', ')
+      notify.error(t('common.tryAgain'), `Insufficient available stock: ${products}.`)
+      return
+    }
+
     await apiFetch('/inventory/transfers', {
       method: 'POST',
       body: {
@@ -111,12 +168,21 @@ const createTransfer = async () => {
     createOpen.value = false
     notify.success(t('common.changesSaved'), t('inventoryTransfers.created'))
   } catch (error: unknown) {
-    notify.error(t('common.tryAgain'), error instanceof Error ? error.message : t('common.tryAgain'))
+    notify.error(t('common.tryAgain'), transferErrorMessage(error))
   } finally {
     creating.value = false
   }
 }
 watch(productSearch, () => { void loadProducts(true) })
+watch(
+  [
+    () => transferForm.sourceWarehouseId,
+    () => transferForm.productIds
+  ],
+  ([warehouseId, productIds]) => {
+    void loadAvailableStock(warehouseId, productIds)
+  },
+)
 watch(
   () => transferForm.productIds,
   (productIds) => {
@@ -142,13 +208,31 @@ const requestAction = (transfer: Transfer, action: 'send' | 'receive' | 'cancel'
 const runAction = async (transfer: Transfer, action: 'send' | 'receive' | 'cancel') => {
   actingId.value = transfer.id
   try {
+    if (action === 'send') {
+      const stock = await Promise.all(transfer.items.map(async (item) => {
+        const response = await apiFetch<ProductStock>(`/inventory/products/${item.productId}`)
+        const level = response.levels.find(current => current.warehouseId === transfer.sourceWarehouseId)
+
+        return {
+          sku: item.sku || item.productId,
+          requested: item.quantity,
+          available: level?.availableStock ?? 0
+        }
+      }))
+      const insufficient = stock.filter(item => item.available < item.requested)
+      if (insufficient.length) {
+        const products = insufficient.map(item => `${item.sku} (${item.available} available, ${item.requested} requested)`).join(', ')
+        notify.error(t('common.tryAgain'), `Insufficient available stock in ${transfer.sourceWarehouse}: ${products}.`)
+        return
+      }
+    }
     await apiFetch(`/inventory/transfers/${transfer.id}/${action}`, { method: 'POST' })
     await refresh()
     selectedTransfer.value = transfers.value.find(item => item.id === transfer.id) ?? null
     confirmOpen.value = false
     notify.success(t('common.changesSaved'), t(`inventoryTransfers.${action}Success`))
   } catch (error: unknown) {
-    notify.error(t('common.tryAgain'), error instanceof Error ? error.message : t('common.tryAgain'))
+    notify.error(t('common.tryAgain'), transferErrorMessage(error))
   } finally {
     actingId.value = null
   }
@@ -213,7 +297,6 @@ watch(pageSize, () => { page.value = 1 })
     :columns="columns"
     :get-row-id="(row) => row.id"
     :loading="status === 'pending'"
-    :max-height="null"
     table-key="inventory-transfers"
     :column-labels="{
       createdAt: t('inventoryTransfers.date'),
@@ -243,7 +326,6 @@ watch(pageSize, () => { page.value = 1 })
         v-model:page="page"
         v-model:page-size="pageSize"
         :total="data?.pagination.total ?? 0"
-        class="border-t-0 pt-0"
       />
     </template>
   </AppDataTable>
@@ -277,7 +359,16 @@ watch(pageSize, () => { page.value = 1 })
             :key="product.id"
             class="grid grid-cols-[minmax(0,1fr)_7rem_auto] items-center gap-2 rounded-md border border-default p-2"
           >
-            <span class="truncate text-sm text-highlighted">{{ product.name }}</span>
+            <div class="min-w-0">
+              <p class="truncate text-sm text-highlighted">{{ product.name }}</p>
+              <p
+                v-if="transferForm.sourceWarehouseId"
+                class="text-xs"
+                :class="exceedsAvailableStock(product.id, quantities[product.id] || 1) ? 'text-error' : 'text-muted'"
+              >
+                {{ availabilityLoading ? 'Checking available stock…' : `Available: ${availableByProductId[product.id] ?? 0}` }}
+              </p>
+            </div>
             <UInput v-model.number="quantities[product.id]" type="number" min="0.0001" step="0.0001" />
             <UButton icon="i-lucide-x" color="neutral" variant="ghost" @click="removeProduct(product.id)" />
           </div>
@@ -285,7 +376,23 @@ watch(pageSize, () => { page.value = 1 })
         <UFormField :label="t('inventory.note')">
           <UTextarea v-model="transferForm.note" class="w-full" />
         </UFormField>
-        <div class="flex justify-end gap-2"><UButton :label="t('common.cancel')" color="neutral" variant="subtle" @click="createOpen = false" /><UButton :label="t('common.create')" type="submit" :loading="creating" /></div>
+        <p v-if="insufficientSelectedProducts.length" class="text-sm text-error">
+          Requested quantity is greater than the available stock in the source warehouse. Reduce the quantity or add stock before creating this transfer.
+        </p>
+        <div class="flex justify-end gap-2">
+          <UButton
+            :label="t('common.cancel')"
+            color="neutral"
+            variant="subtle"
+            @click="createOpen = false"
+          />
+          <UButton
+            :label="t('common.create')"
+            type="submit"
+            :disabled="availabilityLoading || insufficientSelectedProducts.length > 0"
+            :loading="creating"
+          />
+        </div>
       </UForm>
     </template>
   </UModal>
@@ -301,7 +408,7 @@ watch(pageSize, () => { page.value = 1 })
           :data="selectedTransfer.items"
           :columns="detailColumns"
           :get-row-id="row => row.productId"
-          :max-height="null"
+          max-height="h-auto"
           table-key="inventory-transfer-lines"
         />
         <div class="flex justify-end gap-2">

@@ -63,6 +63,11 @@ class ProductChannelPublication
         return $this->salesChannel;
     }
 
+    public function getProduct(): Product
+    {
+        return $this->product;
+    }
+
     public function getVisibility(): int
     {
         return $this->visibility;

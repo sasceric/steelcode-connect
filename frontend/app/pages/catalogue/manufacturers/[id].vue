@@ -142,7 +142,9 @@ const loadMoreProducts = async () => {
 }
 const productItems = computed(() =>
   products.value.map(product => ({
-    label: product.sku ? `${product.name} (${product.sku})` : product.name,
+    label: product.name,
+    productName: product.name,
+    productNumber: product.sku,
     value: product.id
   }))
 )

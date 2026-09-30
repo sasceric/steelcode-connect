@@ -98,6 +98,22 @@ const links = computed(
               },
             },
             {
+              label: t('supplierInvoices.title'),
+              icon: 'i-lucide-file-check-2',
+              to: '/inventory/supplier-invoices',
+              onSelect: () => {
+                open.value = false
+              },
+            },
+            {
+              label: t('replenishment.title'),
+              icon: 'i-lucide-chart-no-axes-combined',
+              to: '/inventory/replenishment',
+              onSelect: () => {
+                open.value = false
+              },
+            },
+            {
               label: t('nav.stock'),
               icon: 'i-lucide-boxes',
               to: '/inventory/stock',
@@ -125,6 +141,46 @@ const links = computed(
               label: t('nav.stockCounts'),
               icon: 'i-lucide-clipboard-check',
               to: '/inventory/counts',
+              onSelect: () => {
+                open.value = false
+              },
+            },
+            {
+              label: t('operationsExceptions.title'),
+              icon: 'i-lucide-triangle-alert',
+              to: '/inventory/exceptions',
+              onSelect: () => {
+                open.value = false
+              },
+            },
+          ],
+        },
+        {
+          label: t('nav.sales'),
+          icon: 'i-lucide-shopping-bag',
+          defaultOpen: true,
+          type: 'trigger',
+          children: [
+            {
+              label: t('nav.orders'),
+              icon: 'i-lucide-receipt-text',
+              to: '/sales/orders',
+              onSelect: () => {
+                open.value = false
+              },
+            },
+            {
+              label: t('nav.pickLists'),
+              icon: 'i-lucide-clipboard-list',
+              to: '/sales/picklists',
+              onSelect: () => {
+                open.value = false
+              },
+            },
+            {
+              label: t('nav.customers'),
+              icon: 'i-lucide-users',
+              to: '/sales/customers',
               onSelect: () => {
                 open.value = false
               },

@@ -23,6 +23,16 @@ const links = computed(
           to: '/inventory/purchase-orders'
         },
         {
+          label: t('supplierInvoices.title'),
+          icon: 'i-lucide-file-check-2',
+          to: '/inventory/supplier-invoices'
+        },
+        {
+          label: t('replenishment.title'),
+          icon: 'i-lucide-chart-no-axes-combined',
+          to: '/inventory/replenishment'
+        },
+        {
           label: t('nav.stock'),
           icon: 'i-lucide-boxes',
           to: '/inventory/stock'
@@ -41,6 +51,11 @@ const links = computed(
           label: t('nav.stockCounts'),
           icon: 'i-lucide-clipboard-check',
           to: '/inventory/counts'
+        },
+        {
+          label: t('operationsExceptions.title'),
+          icon: 'i-lucide-triangle-alert',
+          to: '/inventory/exceptions'
         }
       ]
     ] satisfies NavigationMenuItem[][]
