@@ -10,6 +10,7 @@ type Issue = {
 }
 
 const { t } = useI18n()
+const localePath = useLocalePath()
 const notify = useAppToast()
 const auth = useAuth()
 const canManage = computed(() => auth.tenant.value?.role === 'owner')
@@ -121,7 +122,7 @@ function actions(issue: Issue) {
   const items = [{
     label: t('operationsExceptions.open'),
     icon: 'i-lucide-arrow-up-right',
-    onSelect: () => navigateTo(targetRoute(issue))
+    onSelect: () => navigateTo(localePath(targetRoute(issue)))
   }]
   if (canManage.value && ['unmatched_products', 'unallocated_orders', 'stock_sync_failed', 'sales_sync_failed'].includes(type.value)) {
     items.push({
@@ -140,7 +141,7 @@ const columns = computed<TableColumn<Issue>[]>(() => [
     header: t('operationsExceptions.reference'),
     cell: ({ row }) => h('button', {
       class: 'cursor-pointer font-medium text-primary hover:underline',
-      onClick: () => navigateTo(targetRoute(row.original))
+      onClick: () => navigateTo(localePath(targetRoute(row.original)))
     }, row.original.reference)
   },
   {

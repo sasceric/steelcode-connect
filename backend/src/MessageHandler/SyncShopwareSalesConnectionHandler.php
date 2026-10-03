@@ -6,13 +6,13 @@ use App\Entity\IntegrationConnection;
 use App\Entity\IntegrationImportRun;
 use App\Entity\IntegrationSalesSyncCursor;
 use App\Entity\IntegrationSecret;
-use App\Entity\SalesOrder;
 use App\Integration\SecretCipher;
 use App\Integration\ShopwareClient;
 use App\Integration\ShopwareSalesMapper;
 use App\Integration\ShopwareSalesRecordIngestor;
 use App\Message\SyncShopwareSalesConnection;
 use App\Service\SalesOrderIngestionService;
+use App\Service\PendingSalesOrderProcessor;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\Persistence\ManagerRegistry;
 use Psr\Log\LoggerInterface;
@@ -195,49 +195,7 @@ final class SyncShopwareSalesConnectionHandler
             throw new \RuntimeException('The Shopware Sales sync context was removed.');
         }
 
-        $afterId = $cursor->getLastPendingOrderId();
-        $sql = <<<'SQL'
-SELECT id
-FROM sales_orders
-WHERE connection_id = CAST(:connectionId AS uuid)
-  AND status IN ('new', 'reserved', 'partially_fulfilled')
-  AND EXISTS (
-      SELECT 1 FROM sales_order_items item
-      WHERE item.sales_order_id = sales_orders.id
-        AND item.line_type = 'product'
-        AND item.quantity > item.reserved_quantity + item.fulfilled_quantity
-  )
-SQL;
-        if ($afterId !== null) {
-            $sql .= ' AND id > CAST(:afterId AS uuid)';
-        }
-        $sql .= ' ORDER BY id LIMIT 100';
-        $parameters = ['connectionId' => $connectionId];
-        if ($afterId !== null) {
-            $parameters['afterId'] = $afterId;
-        }
-
-        $ids = $this->entityManager->getConnection()->executeQuery($sql, $parameters)->fetchFirstColumn();
-        if ($ids === []) {
-            $cursor->markPendingOrderId(null);
-            $this->entityManager->flush();
-
-            return;
-        }
-
-        foreach ($ids as $id) {
-            if (!is_string($id) || !Uuid::isValid($id)) {
-                continue;
-            }
-            $order = $this->entityManager->find(SalesOrder::class, Uuid::fromString($id));
-            if (!$order instanceof SalesOrder || !$this->ingestion->retryAllocation($order, $this->entityManager)) {
-                continue;
-            }
-            $this->ingestion->reconcileDeliveryFulfillment($order, $this->entityManager);
-        }
-
-        $cursor->markPendingOrderId((string) end($ids));
-        $this->entityManager->flush();
+        (new PendingSalesOrderProcessor($this->ingestion))->process($connection, $cursor, $this->entityManager);
     }
 
     /**

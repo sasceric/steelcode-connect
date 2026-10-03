@@ -53,6 +53,8 @@ type Variant = {
   name: string | null
   price: number | null
   currency: string | null
+  coverUrl: string | null
+  stock: number
   optionValues: Record<string, string>
   status: string
 }
@@ -60,6 +62,13 @@ type OptionGroup = {
   id: string
   name: string
   values: { id: string, value: string }[]
+}
+type ExistingVariantCombination = {
+  id: string
+  sku: string | null
+  propertyIds: string[]
+  optionValues: Record<string, string>
+  wildcardGroupIds?: string[]
 }
 type Locale = { id: string, code: string, label: string }
 type Price = {
@@ -121,6 +130,8 @@ type CatalogueProperty = {
   code: string
   colorHex: string | null
   position: number
+  propertyGroupId?: string
+  labels?: Record<string, string>
 }
 type CataloguePropertyGroup = {
   id: string
@@ -130,15 +141,12 @@ type CataloguePropertyGroup = {
   isFilterable: boolean
   position: number
   properties: CatalogueProperty[]
+  translations?: Record<string, { name: string }>
 }
 type ProductPropertyRow = {
   id: string
   name: string
   properties: CatalogueProperty[]
-}
-type PropertyGroupTranslation = {
-  name: string | null
-  properties: { id: string, name: string | null }[]
 }
 type InventoryLevel = {
   warehouseId: string
@@ -197,6 +205,7 @@ type CustomField = {
     | 'media'
     | 'color'
     | 'price'
+    | 'json'
   labels: Record<string, string>
   config: Record<string, any>
   position: number
@@ -231,6 +240,7 @@ type CatalogueReferences = {
 type ProductReferences = {
   taxId: string | null
   manufacturerId: string | null
+  brands: { id: string, name: string, labels: Record<string, string> }[]
   unitId: string | null
   purchaseUnit: string | null
   referenceUnit: string | null
@@ -245,6 +255,7 @@ type ProductCategory = {
   translations: Record<string, { name: string }>
 }
 
+const localePath = useLocalePath()
 const route = useRoute()
 const { t } = useI18n()
 const toast = useToast()
@@ -258,8 +269,13 @@ const stockValidationErrors = stockValidation.errors
 const priceValidation = useFormValidation()
 const priceValidationErrors = priceValidation.errors
 const optionOpen = ref(false)
+const variantGeneratorTab = ref('options')
+const existingVariantsPage = ref(1)
+const existingVariantsPagination = reactive({ pageSize: 25 })
+watch(() => existingVariantsPagination.pageSize, () => {
+  existingVariantsPage.value = 1
+})
 const activeVariantGroupId = ref('')
-const variantSearch = ref('')
 const variantsTableSearch = ref('')
 const debouncedVariantsTableSearch = ref('')
 const variantSorting = ref<SortingState>([])
@@ -312,7 +328,6 @@ const selectedPropertyIds = ref<string[]>([])
 const specificationsOpen = ref(false)
 const specificationsSaving = ref(false)
 const activeSpecificationGroupId = ref('')
-const specificationSearch = ref('')
 const specificationPropertyIds = ref<string[]>([])
 const addedPropertiesSearch = ref('')
 const propertyRowSelection = ref<Record<string, boolean>>({})
@@ -341,6 +356,7 @@ const state = reactive({
   productType: 'physical',
   manufacturerNumber: '',
   manufacturerId: '',
+  brandIds: [] as string[],
   taxId: '',
   unitId: '',
   purchaseUnit: '',
@@ -498,7 +514,8 @@ const unassignedCustomFields = computed(() => customFieldSetsData.value?.unassig
 const activeCustomFields = computed(() =>
   selectedCustomFieldSet.value === 'uncategorized'
     ? unassignedCustomFields.value
-    : (activeCustomFieldSet.value?.fields ?? [])
+    : (activeCustomFieldSet.value?.fields ?? []).filter(field =>
+        !field.config.entityType || field.config.entityType === 'product')
 )
 const {
   data: productSalesChannelsData,
@@ -612,26 +629,22 @@ const { data: propertyGroupsData } = await useAsyncData('catalogue-property-grou
   { lazy: true }
 )
 const propertyGroups = computed(() => propertyGroupsData.value?.propertyGroups ?? [])
-const propertyGroupTranslations = ref<Record<string, PropertyGroupTranslation>>({})
+const propertyValuesByGroup = ref<Record<string, CatalogueProperty[]>>({})
 const localizedPropertyGroups = computed(() =>
   propertyGroups.value.map((group) => {
-    if (selectedLocale.value === defaultLocale.value) return group
-    const translation = propertyGroupTranslations.value[group.id]
-    if (!translation) return group
-    const names = new Map(translation.properties.map(property => [property.id, property.name]))
     return {
       ...group,
-      name: translation.name || group.name,
-      properties: group.properties.map(property => ({
+      name: group.translations?.[selectedLocale.value]?.name || group.name,
+      properties: (propertyValuesByGroup.value[group.id] ?? group.properties).map(property => ({
         ...property,
-        name: names.get(property.id) || property.name
+        name: property.labels?.[selectedLocale.value] || property.name
       }))
     }
   })
 )
 const { data: selectedPropertiesData, refresh: refreshSelectedProperties } = await useAsyncData(
   `product-properties-${route.params.id}`,
-  () => apiFetch<{ propertyIds: string[] }>(`/products/${route.params.id}/properties`),
+  () => apiFetch<{ propertyIds: string[], properties: CatalogueProperty[] }>(`/products/${route.params.id}/properties`),
   { lazy: true }
 )
 const { data: categoriesData } = await useAsyncData('product-category-tree', () =>
@@ -681,8 +694,10 @@ const { data: variantOptionsData, refresh: refreshVariantOptions } = await useAs
   () =>
     apiFetch<{
       optionGroups: { propertyGroupId: string, propertyIds: string[] }[]
+      properties: CatalogueProperty[]
+      existingCombinations: ExistingVariantCombination[]
     }>(`/products/${route.params.id}/variant-options`),
-  { lazy: true }
+  { immediate: false }
 )
 const { data: currenciesData } = await useAsyncData('product-currencies', () =>
   apiFetch<{ currencies: Currency[] }>('/products/currencies'),
@@ -697,27 +712,86 @@ const combinations = computed(() => {
   const selected = Object.values(variantPropertyIds.value).filter(ids => ids.length)
   return selected.length ? selected.reduce((count, ids) => count * ids.length, 1) : 0
 })
-const activeVariantGroup = computed(
-  () =>
-    localizedPropertyGroups.value.find(group => group.id === activeVariantGroupId.value)
-    || localizedPropertyGroups.value[0]
-)
-const visibleVariantProperties = computed(() =>
-  (activeVariantGroup.value?.properties ?? []).filter(property =>
-    property.name.toLowerCase().includes(variantSearch.value.toLowerCase())
-  )
-)
-const activeSpecificationGroup = computed(
-  () =>
-    localizedPropertyGroups.value.find(group => group.id === activeSpecificationGroupId.value)
-    || localizedPropertyGroups.value[0]
-)
-const visibleSpecificationProperties = computed(() => {
-  const query = specificationSearch.value.trim().toLocaleLowerCase()
-  return (activeSpecificationGroup.value?.properties ?? []).filter(
-    property => !query || property.name.toLocaleLowerCase().includes(query)
-  )
+const selectedVariantPropertyIds = computed(() => Object.values(variantPropertyIds.value).flat())
+const existingCombinations = computed(() => variantOptionsData.value?.existingCombinations ?? [])
+const matchingExistingCombinations = computed(() => {
+  const groups = Object.entries(variantPropertyIds.value).filter(([, ids]) => ids.length)
+  if (!groups.length || combinations.value > 200) return 0
+  let choices: Record<string, string>[] = [{}]
+  for (const [groupId, ids] of groups) {
+    choices = choices.flatMap(choice => ids.map(id => ({ ...choice, [groupId]: id })))
+  }
+  return choices.filter(choice => existingCombinations.value.some(variant => {
+    const wildcards = variant.wildcardGroupIds || []
+    return variant.propertyIds.length + wildcards.length === groups.length
+      && Object.entries(choice).every(([groupId, id]) =>
+        wildcards.includes(groupId) || variant.propertyIds.includes(id))
+  })).length
 })
+const newCombinations = computed(() => Math.max(0, combinations.value - matchingExistingCombinations.value))
+const selectedVariantProperties = computed(() =>
+  Object.values(propertyValuesByGroup.value).flat().filter(property =>
+    selectedVariantPropertyIds.value.includes(property.id)
+  )
+)
+const variantGeneratorTabs = computed(() => [
+  { value: 'options', label: t('productVariantGeneration.options') },
+  { value: 'existing', label: t('productVariantGeneration.existing', { count: existingCombinations.value.length }) }
+])
+const knownVariantProperties = computed(() => new Map(
+  Object.values(propertyValuesByGroup.value).flat().map(property => [property.id, property])
+))
+function existingCombinationLabel(variant: ExistingVariantCombination) {
+  const labels = variant.propertyIds.map(id => {
+      const property = knownVariantProperties.value.get(id)
+      return property?.labels?.[selectedLocale.value] || property?.name || id
+  })
+  for (const groupId of variant.wildcardGroupIds || []) {
+    const group = propertyGroups.value.find(group => group.id === groupId)
+    labels.push(`${group?.name || groupId}: ${t('productVariantGeneration.anyValue')}`)
+  }
+  return labels.length ? labels.join(' / ') : Object.values(variant.optionValues).join(' / ') || '—'
+}
+const existingVariantRows = computed(() => existingCombinations.value.map(variant => ({
+  ...variant,
+  combination: existingCombinationLabel(variant)
+})))
+const visibleExistingVariantRows = computed(() => existingVariantRows.value.slice(
+  (existingVariantsPage.value - 1) * existingVariantsPagination.pageSize,
+  existingVariantsPage.value * existingVariantsPagination.pageSize
+))
+const existingVariantColumns = computed<TableColumn<ExistingVariantCombination & { combination: string }>[]>(() => [
+  { accessorKey: 'sku', header: t('products.productNumber') },
+  { accessorKey: 'combination', header: t('productVariantGeneration.combination') }
+])
+const variantSelectionCounts = computed(() => Object.fromEntries(
+  Object.entries(variantPropertyIds.value).map(([groupId, ids]) => [groupId, ids.length])
+))
+const specificationSelectionCounts = computed(() => Object.fromEntries(
+  localizedPropertyGroups.value.map(group => [
+    group.id,
+    group.properties.filter(property => specificationPropertyIds.value.includes(property.id)).length
+  ])
+))
+
+function rememberPropertyValues(groupId: string, properties: CatalogueProperty[]) {
+  const known = new Map((propertyValuesByGroup.value[groupId] ?? []).map(property => [property.id, property]))
+  for (const property of properties) known.set(property.id, property)
+  propertyValuesByGroup.value[groupId] = [...known.values()]
+}
+
+function toggleVariantProperty(property: CatalogueProperty, selected: boolean) {
+  if (!property.propertyGroupId) return
+  const groupId = property.propertyGroupId
+  const current = variantPropertyIds.value[groupId] ?? []
+  variantPropertyIds.value[groupId] = selected
+    ? [...new Set([...current, property.id])]
+    : current.filter(id => id !== property.id)
+}
+
+function toggleSpecificationValue(property: CatalogueProperty, selected: boolean) {
+  toggleSpecificationProperty(property.id, selected)
+}
 const selectedSpecificationGroups = computed(() =>
   localizedPropertyGroups.value
     .map(group => ({
@@ -862,6 +936,7 @@ const productPropertyColumns: TableColumn<ProductPropertyRow>[] = [
   }
 ]
 
+const ProductTableCell = resolveComponent('ProductTableCell')
 const variantColumns: TableColumn<Variant>[] = [
   {
     id: 'select',
@@ -885,14 +960,12 @@ const variantColumns: TableColumn<Variant>[] = [
     accessorKey: 'name',
     header: () => t('products.variantName'),
     cell: ({ row }) =>
-      h(
-        'button',
-        {
-          class: 'cursor-pointer text-left font-medium text-highlighted hover:text-primary',
-          onClick: () => navigateTo(`/catalogue/products/${row.original.id}`)
-        },
-        row.original.name || row.original.sku || '—'
-      )
+      h(ProductTableCell, {
+        id: row.original.id,
+        name: row.original.name,
+        sku: row.original.sku,
+        coverUrl: row.original.coverUrl
+      })
   },
   {
     accessorKey: 'sku',
@@ -904,6 +977,12 @@ const variantColumns: TableColumn<Variant>[] = [
     header: () => t('products.price'),
     cell: ({ row }) =>
       row.original.price === null ? '—' : money(row.original.price, row.original.currency || 'BAM')
+  },
+  {
+    accessorKey: 'stock',
+    header: () => t('products.stock'),
+    enableSorting: false,
+    cell: ({ row }) => row.original.stock
   },
   {
     id: 'actions',
@@ -923,7 +1002,7 @@ const variantColumns: TableColumn<Variant>[] = [
                 {
                   label: t('common.edit'),
                   icon: 'i-lucide-pencil',
-                  onSelect: () => navigateTo(`/catalogue/products/${row.original.id}`)
+                  onSelect: () => navigateTo(localePath(`/catalogue/products/${row.original.id}`))
                 }
               ],
               [
@@ -981,7 +1060,7 @@ const inventoryLevelColumns: TableColumn<InventoryLevel>[] = [
         'button',
         {
           class: 'cursor-pointer font-medium text-highlighted hover:text-primary',
-          onClick: () => navigateTo(`/inventory/warehouses/${row.original.warehouseId}`)
+          onClick: () => navigateTo(localePath(`/inventory/warehouses/${row.original.warehouseId}`))
         },
         row.original.warehouse
       )
@@ -1133,6 +1212,9 @@ watch(
   selectedPropertiesData,
   (value) => {
     selectedPropertyIds.value = value?.propertyIds ?? []
+    for (const property of value?.properties ?? []) {
+      if (property.propertyGroupId) rememberPropertyValues(property.propertyGroupId, [property])
+    }
   },
   { immediate: true }
 )
@@ -1141,6 +1223,7 @@ watch(
   (references) => {
     state.taxId = references?.taxId || ''
     state.manufacturerId = references?.manufacturerId || ''
+    state.brandIds = references?.brands?.map(brand => brand.id) ?? []
     state.unitId = references?.unitId || ''
     state.purchaseUnit = references?.purchaseUnit || ''
     state.referenceUnit = references?.referenceUnit || ''
@@ -1176,43 +1259,28 @@ watch(
 watch(
   variantOptionsData,
   (value) => {
+    for (const property of value?.properties ?? []) {
+      if (property.propertyGroupId) rememberPropertyValues(property.propertyGroupId, [property])
+    }
     variantPropertyIds.value = Object.fromEntries(
       (value?.optionGroups ?? []).map(group => [group.propertyGroupId, group.propertyIds])
     )
   },
   { immediate: true }
 )
-const loadPropertyGroupTranslations = async () => {
-  const locale = selectedLocale.value
-  if (locale === defaultLocale.value) {
-    propertyGroupTranslations.value = {}
-    return
-  }
-  const groups = propertyGroups.value
-  const translations = await Promise.all(
-    groups.map(
-      async group =>
-        [
-          group.id,
-          (
-            await apiFetch<{ translation: PropertyGroupTranslation }>(
-              `/property-groups/${group.id}/translations/${locale}`
-            )
-          ).translation
-        ] as const
-    )
-  )
-  if (locale === selectedLocale.value)
-    propertyGroupTranslations.value = Object.fromEntries(translations)
+async function openVariantGenerator() {
+  variantGeneratorTab.value = 'options'
+  existingVariantsPage.value = 1
+  await refreshVariantOptions()
+  activeVariantGroupId.value = Object.keys(variantPropertyIds.value)[0] || propertyGroups.value[0]?.id || ''
+  optionOpen.value = true
 }
-
 watch(
   propertyGroups,
   (groups) => {
     if (!activeVariantGroupId.value && groups[0]) activeVariantGroupId.value = groups[0].id
     if (!activeSpecificationGroupId.value && groups[0])
       activeSpecificationGroupId.value = groups[0].id
-    void loadPropertyGroupTranslations()
   },
   { immediate: true }
 )
@@ -1236,7 +1304,6 @@ const save = async () => {
 watch(selectedLocale, () => {
   productValidation.clear()
   void loadTranslation()
-  void loadPropertyGroupTranslations()
 })
 watch(
   selectedTab,
@@ -1451,6 +1518,7 @@ const saveProduct = async () => {
       body: {
         taxId: state.taxId,
         manufacturerId: state.manufacturerId,
+        brandIds: state.brandIds,
         unitId: state.unitId,
         purchaseUnit: state.purchaseUnit,
         referenceUnit: state.referenceUnit,
@@ -1543,12 +1611,12 @@ const generateVariants = async () => {
           }))
       }
     })
-    await refreshVariantOptions()
     const response = await apiFetch<{ message: string }>(
       `/products/${route.params.id}/variants/generate`,
       { method: 'POST' }
     )
     await refreshVariants()
+    await refreshVariantOptions()
     optionOpen.value = false
     notify.success(t('products.updatedSuccess'), response.message)
   } catch (error: any) {
@@ -1653,7 +1721,6 @@ const toggleProductProperty = (id: string, selected: boolean) => {
 
 const openSpecifications = () => {
   specificationPropertyIds.value = [...selectedPropertyIds.value]
-  specificationSearch.value = ''
   specificationsOpen.value = true
 }
 
@@ -2152,6 +2219,14 @@ const toggleAdvancedPriceChain = (row: AdvancedRow, kind: 'price' | 'list' | 'ch
               class="w-full"
             />
           </UFormField>
+          <UFormField :label="t('products.brands')">
+            <BrandPicker
+              v-model="state.brandIds"
+              :initial-brands="productReferencesData?.brands"
+              :locale="selectedLocale"
+              class="w-full"
+            />
+          </UFormField>
           <UFormField :label="t('productEditor.productType')">
             <USelect
               v-model="state.productType"
@@ -2599,9 +2674,9 @@ const toggleAdvancedPriceChain = (row: AdvancedRow, kind: 'price' | 'list' | 'ch
       >
         <template #footer>
           <UButton
-            :label="t('catalogue.generateVariants', { count: combinations })"
+            :label="t('productVariantGeneration.open')"
             :disabled="!localizedPropertyGroups.length"
-            @click="optionOpen = true"
+            @click="openVariantGenerator"
           />
         </template>
       </UPageCard>
@@ -2637,7 +2712,8 @@ const toggleAdvancedPriceChain = (row: AdvancedRow, kind: 'price' | 'list' | 'ch
         :column-labels="{
           name: t('products.variantName'),
           sku: t('products.productNumber'),
-          price: t('products.price')
+          price: t('products.price'),
+          stock: t('products.stock')
         }"
       >
         <template #footer>
@@ -2720,7 +2796,7 @@ const toggleAdvancedPriceChain = (row: AdvancedRow, kind: 'price' | 'list' | 'ch
             :label="t('productProperties.openGroups')"
             color="neutral"
             variant="outline"
-            @click="navigateTo('/catalogue/attributes')"
+            @click="navigateTo(localePath('/catalogue/attributes'))"
           />
         </div>
         <div v-else-if="!selectedSpecificationGroups.length" class="py-16 text-center">
@@ -3063,7 +3139,7 @@ const toggleAdvancedPriceChain = (row: AdvancedRow, kind: 'price' | 'list' | 'ch
                 <UButton
                   v-for="assignedProduct in group.products"
                   :key="assignedProduct.id"
-                  :to="`/catalogue/products/${assignedProduct.id}`"
+                  :to="localePath(`/catalogue/products/${assignedProduct.id}`)"
                   :label="assignedProduct.name || t('products.product')"
                   color="neutral"
                   variant="outline"
@@ -3359,76 +3435,19 @@ const toggleAdvancedPriceChain = (row: AdvancedRow, kind: 'price' | 'list' | 'ch
     v-model:open="specificationsOpen"
     :title="t('productProperties.configure')"
     :description="t('productProperties.modalDescription')"
-    :ui="{ content: 'max-w-6xl' }"
+    :ui="{ content: 'max-w-6xl', body: 'p-0 sm:p-0 overflow-hidden' }"
   >
     <template #body>
-      <div class="grid min-h-120 grid-cols-[280px_minmax(0,1fr)]">
-        <aside class="border-r border-default p-4">
-          <p class="mb-4 text-sm text-muted">
-            {{ t('productProperties.selectGroup') }}
-          </p>
-          <div class="space-y-1">
-            <button
-              v-for="group in localizedPropertyGroups"
-              :key="group.id"
-              type="button"
-              class="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm"
-              :class="
-                activeSpecificationGroup?.id === group.id
-                  ? 'bg-elevated font-medium text-highlighted'
-                  : 'text-muted hover:bg-elevated/60'
-              "
-              @click="activeSpecificationGroupId = group.id"
-            >
-              <span class="truncate">{{ group.name }}</span>
-              <span
-                v-if="
-                  group.properties.filter((property) =>
-                    specificationPropertyIds.includes(property.id)
-                  ).length
-                "
-                class="ml-3 text-xs"
-              >
-                {{
-                  group.properties.filter((property) =>
-                    specificationPropertyIds.includes(property.id)
-                  ).length
-                }}
-              </span>
-            </button>
-          </div>
-        </aside>
-        <section class="p-5">
-          <UInput
-            v-model="specificationSearch"
-            icon="i-lucide-search"
-            :placeholder="t('productProperties.searchValues')"
-            class="mb-5 w-full"
-          />
-          <div v-if="activeSpecificationGroup" class="space-y-2">
-            <p class="text-sm font-medium text-highlighted">
-              {{ activeSpecificationGroup.name }}
-            </p>
-            <UCheckbox
-              v-for="property in visibleSpecificationProperties"
-              :key="property.id"
-              :label="property.name"
-              :model-value="specificationPropertyIds.includes(property.id)"
-              class="flex rounded-md px-3 py-2 hover:bg-elevated/60"
-              @update:model-value="
-                (value: boolean | 'indeterminate') =>
-                  toggleSpecificationProperty(property.id, Boolean(value))
-              "
-            />
-            <p
-              v-if="!visibleSpecificationProperties.length"
-              class="py-8 text-center text-sm text-muted"
-            >
-              {{ t('productProperties.noValues') }}
-            </p>
-          </div>
-        </section>
-      </div>
+      <PropertyGroupValuePicker
+        v-model:active-group-id="activeSpecificationGroupId"
+        :groups="localizedPropertyGroups"
+        :selected-ids="specificationPropertyIds"
+        :selection-counts="specificationSelectionCounts"
+        :locale="selectedLocale"
+        :description="t('productProperties.selectGroup')"
+        @toggle="toggleSpecificationValue"
+        @values-loaded="rememberPropertyValues"
+      />
     </template>
     <template #footer>
       <div class="flex w-full items-center justify-between gap-3">
@@ -3533,72 +3552,53 @@ const toggleAdvancedPriceChain = (row: AdvancedRow, kind: 'price' | 'list' | 'ch
   <UModal
     v-model:open="optionOpen"
     :title="t('productVariantGeneration.open')"
-    :ui="{ content: 'max-w-6xl' }"
+    :ui="{ content: 'max-w-6xl', body: 'p-0 sm:p-0 overflow-hidden' }"
   >
     <template #body>
-      <div class="grid min-h-120 grid-cols-[280px_minmax(0,1fr)]">
-        <aside class="border-r border-default p-4">
-          <p class="mb-4 text-sm text-muted">
-            {{ t('productVariantGeneration.description') }}
-          </p>
-          <div class="space-y-1">
-            <button
-              v-for="group in localizedPropertyGroups"
-              :key="group.id"
-              type="button"
-              class="flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm"
-              :class="
-                activeVariantGroup?.id === group.id
-                  ? 'bg-elevated font-medium text-highlighted'
-                  : 'text-muted hover:bg-elevated/60'
-              "
-              @click="activeVariantGroupId = group.id"
-            >
-              <span>{{ group.name }}</span><span v-if="(variantPropertyIds[group.id] || []).length" class="text-xs">{{
-                (variantPropertyIds[group.id] || []).length
-              }}</span>
-            </button>
-          </div>
-        </aside>
-        <section class="p-5">
-          <UInput
-            v-model="variantSearch"
-            icon="i-lucide-search"
-            :placeholder="t('products.search')"
-            class="mb-5 w-full"
+      <UTabs
+        v-model="variantGeneratorTab"
+        :items="variantGeneratorTabs"
+        :content="false"
+        class="border-b border-default p-4"
+      />
+      <PropertyGroupValuePicker
+        v-if="variantGeneratorTab === 'options'"
+        v-model:active-group-id="activeVariantGroupId"
+        :groups="localizedPropertyGroups"
+        :selected-ids="selectedVariantPropertyIds"
+        :selection-counts="variantSelectionCounts"
+        :selected-values="selectedVariantProperties"
+        :locale="selectedLocale"
+        :description="t('productVariantGeneration.description')"
+        @toggle="toggleVariantProperty"
+        @values-loaded="rememberPropertyValues"
+      />
+      <AppDataTable
+        v-else
+        :data="visibleExistingVariantRows"
+        :columns="existingVariantColumns"
+        :get-row-id="(row) => row.id"
+        :sortable="false"
+        max-height="h-[min(30rem,calc(100dvh-18rem))]"
+        table-key="variant-generator-existing"
+      >
+        <template #footer>
+          <TablePaginationFooter
+            v-if="existingCombinations.length"
+            v-model:page="existingVariantsPage"
+            v-model:page-size="existingVariantsPagination.pageSize"
+            :total="existingCombinations.length"
           />
-          <div v-if="activeVariantGroup" class="space-y-2">
-            <p class="text-sm font-medium text-highlighted">
-              {{ activeVariantGroup.name }}
-            </p>
-            <UCheckbox
-              v-for="property in visibleVariantProperties"
-              :key="property.id"
-              :label="property.name"
-              :model-value="(variantPropertyIds[activeVariantGroupId] || []).includes(property.id)"
-              class="flex rounded-md px-3 py-2 hover:bg-elevated/60"
-              @update:model-value="
-                (value: boolean | 'indeterminate') =>
-                  (variantPropertyIds[activeVariantGroupId] = Boolean(value)
-                    ? [
-                      ...new Set([
-                        ...(variantPropertyIds[activeVariantGroupId] || []),
-                        property.id
-                      ])
-                    ]
-                    : (variantPropertyIds[activeVariantGroupId] || []).filter(
-                      (id) => id !== property.id
-                    ))
-              "
-            />
-          </div>
-        </section>
-      </div>
+        </template>
+      </AppDataTable>
     </template>
     <template #footer>
       <div class="flex w-full items-center justify-between gap-3">
         <p class="text-sm text-muted">
-          {{ combinations }} combinations
+          {{ t('productVariantGeneration.summary', { new: newCombinations, existing: matchingExistingCombinations }) }}
+          <span class="block text-xs">
+            {{ t('productVariantGeneration.preserveExisting') }}
+          </span>
         </p>
         <div class="flex gap-2">
           <UButton
@@ -3606,9 +3606,10 @@ const toggleAdvancedPriceChain = (row: AdvancedRow, kind: 'price' | 'list' | 'ch
             color="neutral"
             variant="subtle"
             @click="optionOpen = false"
-          /><UButton
-            :label="t('catalogue.generateVariants', { count: combinations })"
-            :disabled="!combinations"
+          />
+          <UButton
+            :label="t('catalogue.generateVariants', { count: newCombinations })"
+            :disabled="!newCombinations || combinations > 200"
             :loading="generating"
             @click="generateVariants"
           />

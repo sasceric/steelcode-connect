@@ -3,6 +3,8 @@
 namespace App\Integration;
 
 use Symfony\Contracts\HttpClient\HttpClientInterface;
+use Symfony\Contracts\HttpClient\Exception\TransportExceptionInterface;
+use Symfony\Contracts\HttpClient\ResponseInterface;
 
 final class ShopwareClient
 {
@@ -11,7 +13,8 @@ final class ShopwareClient
 
     public function __construct(
         private readonly HttpClientInterface $httpClient,
-    ) {
+    )
+    {
     }
 
     /** @param array<string, string> $secrets */
@@ -510,7 +513,99 @@ final class ShopwareClient
         return $languageLocaleCodes;
     }
 
-    /** @param array<string, string> $secrets */
+    /**
+     * One bounded page for the reusable destination/reference selectors.
+     *
+     * @param array<string, string> $secrets
+     */
+    public function searchPage(
+        string $baseUrl,
+        array $secrets,
+        string $entity,
+        array $criteria,
+    ): array
+    {
+        return $this->request(
+            $baseUrl,
+            $this->accessToken($baseUrl, $secrets),
+            'POST',
+            '/api/search/'.$entity,
+            $criteria,
+        );
+    }
+
+    public function writeCatalogueEntity(
+        string $baseUrl,
+        array $secrets,
+        string $entity,
+        array $payload,
+    ): void
+    {
+        $this->writeCatalogueEntities($baseUrl, $secrets, $entity, [$payload]);
+    }
+
+    /** @param list<array<string, mixed>> $payloads */
+    public function writeCatalogueEntities(
+        string $baseUrl,
+        array $secrets,
+        string $entity,
+        array $payloads,
+    ): void
+    {
+        if ($payloads === [] || count($payloads) > 25) {
+            throw new \InvalidArgumentException('Catalogue writes require between one and twenty-five records.');
+        }
+        $response = $this->request(
+            $baseUrl,
+            $this->accessToken($baseUrl, $secrets),
+            'POST',
+            '/api/_action/sync',
+            ['connect-catalogue' => ['entity' => $entity, 'action' => 'upsert', 'payload' => array_values($payloads)]],
+        );
+        if (($response['success'] ?? true) === false || !empty($response['errors'])) {
+            throw new ShopwareRequestException(422, 'Shopware did not confirm the catalogue write.');
+        }
+    }
+
+    public function uploadCatalogueMedia(
+        string $baseUrl,
+        array $secrets,
+        string $id,
+        string $path,
+        string $extension,
+        string $mimeType,
+    ): void
+    {
+        $stream = fopen($path, 'rb');
+        if ($stream === false) {
+            throw new \RuntimeException('The product image could not be opened.');
+        }
+        try {
+            $response = $this->httpClient->request(
+                'POST',
+                rtrim($baseUrl, '/').'/api/_action/media/'.$id.'/upload?'.http_build_query([
+                    'extension' => $extension,
+                    'fileName' => 'connect-'.$id,
+                ]),
+                [
+                    'headers' => [
+                        'Authorization' => 'Bearer '.$this->accessToken($baseUrl, $secrets),
+                        'Content-Type' => $mimeType,
+                    ],
+                    'body' => $stream,
+                    'timeout' => 60,
+                    'max_duration' => 90,
+                ],
+            );
+            $this->throwIfTransient($response);
+            if ($response->getStatusCode() >= 300) {
+                throw new \RuntimeException('Shopware rejected the product image upload.');
+            }
+        } finally {
+            fclose($stream);
+        }
+    }
+
     private function accessToken(string $baseUrl, array $secrets): string
     {
         $cacheKey = hash('sha256', implode("\0", [
@@ -523,14 +618,17 @@ final class ShopwareClient
             return $cached['token'];
         }
 
-        $response = $this->httpClient->request('POST', rtrim($baseUrl, '/').'/api/oauth/token', [
+        $tokenResponse = $this->httpClient->request('POST', rtrim($baseUrl, '/').'/api/oauth/token', [
             'body' => [
                 'grant_type' => 'client_credentials',
                 'client_id' => $secrets['accessKeyId'] ?? '',
                 'client_secret' => $secrets['secretAccessKey'] ?? '',
             ],
             'timeout' => 10,
-        ])->toArray(false);
+            'max_duration' => 15,
+        ]);
+        $this->throwIfTransient($tokenResponse);
+        $response = $tokenResponse->toArray(false);
 
         if (!isset($response['access_token']) || !is_string($response['access_token'])) {
             throw new \RuntimeException('Shopware did not return an access token.');
@@ -540,6 +638,9 @@ final class ShopwareClient
             ? (int) $response['expires_in']
             : 0;
         if ($expiresIn > 30) {
+            if (count($this->accessTokens) >= 256) {
+                array_shift($this->accessTokens);
+            }
             $this->accessTokens[$cacheKey] = [
                 'token' => $response['access_token'],
                 'expiresAt' => time() + $expiresIn - 30,
@@ -563,6 +664,7 @@ final class ShopwareClient
                 'Authorization' => 'Bearer '.$token,
             ], $headers),
             'timeout' => 20,
+            'max_duration' => 30,
         ];
         if ($json !== null) {
             $options['json'] = $json;
@@ -573,6 +675,7 @@ final class ShopwareClient
             rtrim($baseUrl, '/').$path,
             $options,
         );
+        $this->throwIfTransient($httpResponse);
         $status = $httpResponse->getStatusCode();
         $body = $httpResponse->getContent(false);
         $response = $body === '' ? [] : json_decode($body, true);
@@ -586,12 +689,32 @@ final class ShopwareClient
                 ? ($firstError['detail'] ?? $firstError['title'] ?? null)
                 : null;
 
-            throw new \RuntimeException(is_string($detail) && $detail !== ''
+            throw new ShopwareRequestException($status, is_string($detail) && $detail !== ''
                 ? 'Shopware request failed: '.$detail
                 : sprintf('Shopware request failed with HTTP %d.', $status));
         }
 
         return $response;
+    }
+
+    private function throwIfTransient(ResponseInterface $response): void
+    {
+        try {
+            $status = $response->getStatusCode();
+            if ($status !== 429 && $status < 500) {
+                return;
+            }
+            $retryAfter = $response->getHeaders(false)['retry-after'][0] ?? '30';
+            $delay = ctype_digit($retryAfter)
+                ? (int) $retryAfter
+                : max(1, (strtotime($retryAfter) ?: time() + 30) - time());
+            throw new IntegrationRetryLaterException(
+                'Shopware is temporarily unavailable or rate-limited.',
+                min(3600, max(1, $delay)),
+            );
+        } catch (TransportExceptionInterface) {
+            throw new IntegrationRetryLaterException('Shopware could not be reached.');
+        }
     }
 
     /** @param array<string, mixed> $response */

@@ -14,6 +14,23 @@ and deployment, use the [Inventory and Sales operating guide](inventory-and-sale
 4. Enable fulfilment only for locations that can ship customer orders.
 5. Set the fulfilment priority: lower values are tried first for sales-order allocation. One order is reserved from one warehouse that can supply all its lines; the system does not silently split an order between locations.
 
+### Deactivate a location safely
+
+1. Resolve all nonzero stock, reserved, unavailable and incoming balances. Use
+   transfers, receipts, return inspection or audited corrections as appropriate.
+2. Complete/release reserved sales-order allocations and inspect quarantined returns.
+3. Complete or cancel open POs, draft counts and draft transfers. Receive goods
+   already in transit; both transfer endpoints are protected.
+4. Open the warehouse's **Edit** action, turn **Active** off, and save.
+5. If work remains, saving is rejected and the shared edit modal shows an
+   explanation. The warehouse stays active. Completed/cancelled history does
+   not block an empty location. The Default warehouse cannot be deactivated.
+
+Concurrent stock/document operations hold a shared warehouse row lock;
+deactivation holds an exclusive lock while checking and saving. Inactive
+locations reject new stock operations, POs, transfers and counts. Reactivate
+an empty location before using it again; deactivation never deletes its history.
+
 ## 2. Understand stock states
 
 - **Stock**: physical units currently recorded in a warehouse.

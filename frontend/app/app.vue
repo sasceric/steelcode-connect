@@ -1,5 +1,6 @@
 <script setup lang="ts">
 const colorMode = useColorMode()
+const { locale } = useI18n()
 
 const color = computed(() => (colorMode.value === 'dark' ? '#1b1718' : 'white'))
 
@@ -27,7 +28,7 @@ useHead({
     { rel: 'manifest', href: '/site.webmanifest' },
   ],
   htmlAttrs: {
-    lang: 'en',
+    lang: computed(() => locale.value || 'bs'),
   },
 })
 

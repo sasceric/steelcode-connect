@@ -1,0 +1,28 @@
+.property-group-value-picker {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1fr);
+  height: min(30rem, calc(100dvh - 18rem));
+  min-height: 12rem;
+  overflow: hidden;
+}
+
+.property-group-value-picker__panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.property-group-value-picker__scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+@media (max-width: 640px) {
+  .property-group-value-picker {
+    grid-template-columns: 40% minmax(0, 1fr);
+  }
+}

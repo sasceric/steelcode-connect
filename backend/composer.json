@@ -71,7 +71,23 @@
     "scripts": {
         "imports:consume": [
             "Composer\\Config::disableProcessTimeout",
-            "APP_DEBUG=0 php bin/console messenger:consume scheduler_default async --no-debug --memory-limit=256M -vv"
+            "APP_DEBUG=0 php bin/console messenger:consume async --no-debug --memory-limit=256M --time-limit=3600 -vv"
+        ],
+        "sync:control": [
+            "Composer\\Config::disableProcessTimeout",
+            "APP_DEBUG=0 php bin/console messenger:consume scheduler_default control --no-debug --memory-limit=128M --time-limit=3600 -vv"
+        ],
+        "sync:sales": [
+            "Composer\\Config::disableProcessTimeout",
+            "APP_DEBUG=0 php bin/console messenger:consume sales --no-debug --memory-limit=256M --time-limit=3600 -vv"
+        ],
+        "sync:stock": [
+            "Composer\\Config::disableProcessTimeout",
+            "APP_DEBUG=0 php bin/console messenger:consume stock --no-debug --memory-limit=256M --time-limit=3600 -vv"
+        ],
+        "sync:catalogue": [
+            "Composer\\Config::disableProcessTimeout",
+            "APP_DEBUG=0 php bin/console messenger:consume catalogue --no-debug --memory-limit=256M --time-limit=3600 -vv"
         ],
         "auto-scripts": {
             "cache:clear": "symfony-cmd",

@@ -24,6 +24,8 @@ FROM (
     FROM product_channel_publications publication
     INNER JOIN integration_sales_channels channel ON channel.id = publication.sales_channel_id
     WHERE channel.connection_id = :connectionId
+      AND channel.tenant_id = :tenantId
+      AND publication.tenant_id = :tenantId
       AND channel.active = TRUE
       AND publication.visibility > 0
       AND NOT EXISTS (
@@ -33,7 +35,10 @@ FROM (
 ON CONFLICT (tenant_id, product_id)
 DO UPDATE SET status = 'pending', last_error = NULL, updated_at = EXCLUDED.updated_at
 SQL,
-            ['connectionId' => $connection->getId()->toRfc4122()],
+            [
+                'connectionId' => $connection->getId()->toRfc4122(),
+                'tenantId' => $connection->getTenant()->getId()->toRfc4122(),
+            ],
         );
     }
 

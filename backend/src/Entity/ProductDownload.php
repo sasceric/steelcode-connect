@@ -13,6 +13,8 @@ use Symfony\Component\Uid\Uuid;
 )]
 class ProductDownload
 {
+    use CatalogueAssignmentSources;
+
     #[ORM\Id]
     #[ORM\Column(type: 'uuid')]
     private Uuid $id;

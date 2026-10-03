@@ -25,10 +25,16 @@ final class IntegrationImportLogReader
      */
     public function forRun(IntegrationImportRun $run, int $limit = 250): array
     {
+        if (!$run->getTenant()->getId()->equals($run->getConnection()->getTenant()->getId())) {
+            throw new \DomainException('The integration log has inconsistent tenant ownership.');
+        }
         $connector = $this->connectorKey($run->getConnection()->getConnectorKey());
-        $files = glob(
-            rtrim($this->logsDirectory, '/').'/integrations/'.$connector.'-*.log',
-        ) ?: [];
+        $directory = rtrim($this->logsDirectory, '/').'/integrations';
+        $files = [
+            ...(glob($directory.'/'.$run->getTenant()->getId().'/'.$connector.'-*.log') ?: []),
+            // Historical shared log files remain readable only by exact run and connection.
+            ...(glob($directory.'/'.$connector.'-*.log') ?: []),
+        ];
         usort(
             $files,
             static fn (string $left, string $right): int => filemtime($right) <=> filemtime($left),
@@ -70,6 +76,9 @@ final class IntegrationImportLogReader
             if ($entry['connectionId'] !== $run->getConnection()->getId()->toRfc4122()) {
                 continue;
             }
+            if ($entry['tenantId'] !== null && $entry['tenantId'] !== $run->getTenant()->getId()->toRfc4122()) {
+                continue;
+            }
 
             $entries[] = [
                 'id' => $entry['id'],
@@ -93,6 +102,7 @@ final class IntegrationImportLogReader
      *     context: array<string, mixed>,
      *     createdAt: string,
      *     connectionId: string,
+     *     tenantId: ?string,
      *     runId: string
      * }|null
      */
@@ -121,6 +131,7 @@ final class IntegrationImportLogReader
      *     context: array<string, mixed>,
      *     createdAt: string,
      *     connectionId: string,
+     *     tenantId: ?string,
      *     runId: string
      * }|null
      */
@@ -129,6 +140,10 @@ final class IntegrationImportLogReader
         $context = is_array($payload['context'] ?? null) ? $payload['context'] : [];
         $createdAt = $this->string($payload['createdAt'] ?? $payload['datetime'] ?? null);
         $connectionId = $this->string($payload['connectionId'] ?? $context['connectionId'] ?? null);
+        $tenantId = $this->string($payload['tenantId'] ?? $context['tenantId'] ?? null);
+        if ($tenantId === null && (array_key_exists('tenantId', $payload) || array_key_exists('tenantId', $context))) {
+            return null;
+        }
         $runId = $this->string($payload['runId'] ?? $context['runId'] ?? null);
         $stage = $this->string($payload['stage'] ?? $context['stage'] ?? null);
         $message = $this->string($payload['message'] ?? null);
@@ -152,6 +167,7 @@ final class IntegrationImportLogReader
             'context' => $this->details($payload, $context),
             'createdAt' => $createdAt,
             'connectionId' => $connectionId,
+            'tenantId' => $tenantId,
             'runId' => $runId,
         ];
     }
@@ -165,6 +181,7 @@ final class IntegrationImportLogReader
      *     context: array<string, mixed>,
      *     createdAt: string,
      *     connectionId: string,
+     *     tenantId: ?string,
      *     runId: string
      * }|null
      */
@@ -206,7 +223,7 @@ final class IntegrationImportLogReader
                 : [];
         }
 
-        unset($context['connector'], $context['connectionId'], $context['runId'], $context['stage']);
+        unset($context['connector'], $context['tenantId'], $context['connectionId'], $context['runId'], $context['stage']);
 
         return $context;
     }

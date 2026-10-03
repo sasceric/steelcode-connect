@@ -32,6 +32,7 @@ type PickTask = {
   updatedAt: string
 }
 
+const localePath = useLocalePath()
 const route = useRoute()
 const { t } = useI18n()
 const notify = useAppToast()
@@ -187,7 +188,7 @@ function printPickList() {
             icon="i-lucide-arrow-left"
             color="neutral"
             variant="ghost"
-            to="/sales/picklists"
+            :to="localePath('/sales/picklists')"
           />
         </template>
         <template #right>

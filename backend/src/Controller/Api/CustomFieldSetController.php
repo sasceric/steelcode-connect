@@ -20,7 +20,7 @@ use Symfony\Contracts\Translation\TranslatorInterface;
 #[Route('/api/v1/custom-field-sets')]
 final class CustomFieldSetController extends AbstractController
 {
-    private const TYPES = ['text', 'editor', 'number', 'date', 'checkbox', 'switch', 'select', 'entity', 'media', 'color', 'price'];
+    private const TYPES = ['text', 'editor', 'number', 'date', 'checkbox', 'switch', 'select', 'entity', 'media', 'color', 'price', 'json'];
 
     #[Route('', methods: ['GET'])]
     public function index(EntityManagerInterface $em): JsonResponse
@@ -284,7 +284,7 @@ return $set;
         $user = $this->getUser();
         if (!$user instanceof User) {
             throw $this->createAccessDeniedException();
-        }$membership = $em->getRepository(TenantMembership::class)->findOneBy(['user' => $user]);
+        }$membership = $em->getRepository(TenantMembership::class)->forUser($user);
         if (!$membership instanceof TenantMembership || ($owner && $membership->getRole() !== 'owner')) {
             throw $this->createAccessDeniedException();
         }

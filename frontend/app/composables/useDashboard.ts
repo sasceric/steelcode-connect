@@ -3,13 +3,14 @@ import { createSharedComposable } from '@vueuse/core'
 const _useDashboard = () => {
   const route = useRoute()
   const router = useRouter()
+  const localePath = useLocalePath()
   const isNotificationsSlideoverOpen = ref(false)
 
   defineShortcuts({
-    'g-h': () => router.push('/'),
-    'g-i': () => router.push('/inbox'),
-    'g-c': () => router.push('/customers'),
-    'g-s': () => router.push('/settings'),
+    'g-h': () => router.push(localePath('/')),
+    'g-i': () => router.push(localePath('/inbox')),
+    'g-c': () => router.push(localePath('/customers')),
+    'g-s': () => router.push(localePath('/settings')),
     n: () => (isNotificationsSlideoverOpen.value = !isNotificationsSlideoverOpen.value),
   })
 

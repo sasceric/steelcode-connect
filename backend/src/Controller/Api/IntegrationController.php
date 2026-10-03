@@ -14,6 +14,7 @@ use App\Integration\AnanasConnectionTester;
 use App\Integration\ConnectorCatalog;
 use App\Integration\SecretCipher;
 use App\Integration\ShopwareConnectionTester;
+use App\Integration\WooCommerceStockPublisher;
 use App\Service\InventorySyncOutboxService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -27,6 +28,12 @@ use Symfony\Contracts\Translation\TranslatorInterface;
 #[Route('/api/v1/integrations')]
 final class IntegrationController extends AbstractController
 {
+    public function __construct(
+        private readonly \App\Integration\WooCommerceClient $wooCommerceClient,
+    )
+    {
+    }
+
     #[Route('', methods: ['GET'])]
     public function index(EntityManagerInterface $entityManager): JsonResponse
     {
@@ -105,7 +112,7 @@ final class IntegrationController extends AbstractController
         } catch (\Throwable) {
             return $this->json(['message' => $this->message($translator, $this->connectionFailedKey($definition['key']))], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
-        if (in_array($definition['key'], ['shopware', 'ananas'], true)) {
+        if (in_array($definition['key'], ['shopware', 'ananas', 'woocommerce'], true)) {
             return $this->json(['message' => $this->message($translator, 'integration.connection_successful')]);
         }
 
@@ -145,7 +152,7 @@ final class IntegrationController extends AbstractController
         foreach ($secrets as $secret) {
             $secretValues[$secret->getSecretKey()] = $cipher->decrypt($secret->getCiphertext(), $secret->getNonce());
         }
-        if (in_array($connection->getConnectorKey(), ['shopware', 'ananas'], true)) {
+        if (in_array($connection->getConnectorKey(), ['shopware', 'ananas', 'woocommerce'], true)) {
             try {
                 $this->testConnector($connection->getConnectorKey(), $connection->getConfiguration(), $secretValues, $shopwareTester, $ananasTester);
                 $connection->activate($this->message($translator, 'integration.connection_successful'));
@@ -229,6 +236,7 @@ final class IntegrationController extends AbstractController
         EntityManagerInterface $entityManager,
         TranslatorInterface $translator,
         InventorySyncOutboxService $stockOutbox,
+        WooCommerceStockPublisher $wooStock,
     ): JsonResponse {
         $connection = $this->connection($id, $entityManager, true);
         try {
@@ -250,14 +258,20 @@ final class IntegrationController extends AbstractController
         $previousSettings = $this->importSettings($connection);
         $normalizedSettings = $this->normalizeImportSettings($settings);
         if (
-            $connection->getConnectorKey() !== 'shopware'
+            !in_array($connection->getConnectorKey(), ['shopware', 'woocommerce'], true)
             && ($normalizedSettings['salesContinuousSync'] || $normalizedSettings['stockAuthority'] === 'connect')
         ) {
             return $this->json([
                 'message' => $this->message($translator, 'integration.configuration_invalid'),
             ], Response::HTTP_UNPROCESSABLE_ENTITY);
         }
-        if ($normalizedSettings['salesContinuousSync'] && !$normalizedSettings['areas']['salesOrders']) {
+        if (
+            $normalizedSettings['salesContinuousSync']
+            && (
+                !$normalizedSettings['areas']['salesOrders']
+                || !in_array('channel', $connection->getDirections(), true)
+            )
+        ) {
             return $this->json([
                 'message' => $this->message($translator, 'integration.configuration_invalid'),
             ], Response::HTTP_UNPROCESSABLE_ENTITY);
@@ -270,6 +284,11 @@ final class IntegrationController extends AbstractController
         $activateStockSync = $normalizedSettings['stockAuthority'] === 'connect'
             && $previousSettings['stockAuthority'] !== 'connect';
         if ($activateStockSync) {
+            if ($connection->getConnectorKey() === 'woocommerce' && $wooStock->hasParentStockPools($connection, $entityManager)) {
+                return $this->json([
+                    'message' => $this->message($translator, 'integration.woo_parent_stock_unsupported'),
+                ], Response::HTTP_UNPROCESSABLE_ENTITY);
+            }
             $cursor = $entityManager->getRepository(IntegrationSalesSyncCursor::class)->findOneBy([
                 'connection' => $connection,
             ]);
@@ -280,6 +299,7 @@ final class IntegrationController extends AbstractController
                 || $cursor->getStartedAt() != new \DateTimeImmutable($previousSettings['salesContinuousStartedAt'])
                 || $cursor->getLastSyncedAt() <= $cursor->getStartedAt()
                 || $cursor->getLastSyncedAt() < new \DateTimeImmutable('-5 minutes')
+                || $cursor->getLastError() !== null
             ) {
                 return $this->json([
                     'message' => $this->message($translator, 'integration.stock_sync_not_ready'),
@@ -362,11 +382,18 @@ final class IntegrationController extends AbstractController
         if ($connectorKey === 'ananas') {
             $ananasTester->test($secrets);
         }
+        if ($connectorKey === 'woocommerce') {
+            $this->wooCommerceClient->page((string) $configuration['baseUrl'], $secrets, 'products', ['per_page' => 1]);
+        }
     }
 
     private function connectionFailedKey(string $connectorKey): string
     {
-        return $connectorKey === 'ananas' ? 'integration.ananas_connection_failed' : 'integration.shopware_connection_failed';
+        return match ($connectorKey) {
+            'ananas' => 'integration.ananas_connection_failed',
+            'woocommerce' => 'integration.woocommerce_connection_failed',
+            default => 'integration.shopware_connection_failed',
+        };
     }
 
     /** @return array{areas: array<string, bool>, productMatchOrder: list<string>} */
@@ -401,6 +428,7 @@ final class IntegrationController extends AbstractController
             'categories' => true,
             'prices' => true,
             'variants' => true,
+            'media' => true,
             'customFields' => true,
             'channelPublications' => true,
             'productDownloads' => true,
@@ -448,7 +476,7 @@ final class IntegrationController extends AbstractController
         if (!$user instanceof User) {
             throw $this->createAccessDeniedException();
         }
-        $membership = $entityManager->getRepository(TenantMembership::class)->findOneBy(['user' => $user]);
+        $membership = $entityManager->getRepository(TenantMembership::class)->forUser($user);
         if (!$membership instanceof TenantMembership || ($ownerRequired && $membership->getRole() !== 'owner')) {
             throw $this->createAccessDeniedException();
         }

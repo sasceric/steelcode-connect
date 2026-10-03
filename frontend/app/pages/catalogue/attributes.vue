@@ -21,6 +21,7 @@ type PropertyGroup = {
   properties: PropertyValue[]
 }
 
+const localePath = useLocalePath()
 const { t } = useI18n()
 const route = useRoute()
 const toast = useAppToast()
@@ -110,7 +111,7 @@ const groupActions = (group: PropertyGroup) => [
     {
       label: t('common.edit'),
       icon: 'i-lucide-pencil',
-      onSelect: () => navigateTo(`/catalogue/attributes/${group.id}`)
+      onSelect: () => navigateTo(localePath(`/catalogue/attributes/${group.id}`))
     }
   ],
   [
@@ -136,7 +137,7 @@ const groupColumns: TableColumn<PropertyGroup>[] = [
         'button',
         {
           class: 'cursor-pointer font-medium text-highlighted hover:text-primary',
-          onClick: () => navigateTo(`/catalogue/attributes/${row.original.id}`)
+          onClick: () => navigateTo(localePath(`/catalogue/attributes/${row.original.id}`))
         },
         row.original.name
       )

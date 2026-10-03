@@ -11,6 +11,7 @@ use App\Entity\ProductChannelPublication;
 use App\Entity\Product;
 use App\Integration\SecretCipher;
 use App\Integration\ShopwareClient;
+use App\Integration\WooCommerceStockPublisher;
 use Doctrine\ORM\EntityManagerInterface;
 
 final class StockSyncOutboxDispatcher
@@ -18,6 +19,7 @@ final class StockSyncOutboxDispatcher
     public function __construct(
         private readonly SecretCipher $cipher,
         private readonly ShopwareClient $shopware,
+        private readonly WooCommerceStockPublisher $woocommerce,
     ) {
     }
 
@@ -42,6 +44,9 @@ final class StockSyncOutboxDispatcher
 
             $channel = $publication->getSalesChannel();
             $connection = $channel->getConnection();
+            if ($connection->getTenant()->getId() != $event->getTenant()->getId()) {
+                throw new \DomainException('The stock publication connection belongs to another tenant.');
+            }
             if (!$channel->isActive() || !$connection->isEnabled() || $connection->getStatus() !== 'active') {
                 continue;
             }
@@ -50,7 +55,7 @@ final class StockSyncOutboxDispatcher
                 continue;
             }
             if (($settings['salesContinuousSync'] ?? false) !== true) {
-                throw new StockSyncNotReadyException('Shopware Sales sync is disabled for a stock-managed connection.');
+                throw new StockSyncNotReadyException('Sales sync is disabled for a stock-managed connection.');
             }
             $startedAt = $settings['salesContinuousStartedAt'] ?? null;
             $cursor = $entityManager->getRepository(IntegrationSalesSyncCursor::class)->findOneBy([
@@ -63,8 +68,24 @@ final class StockSyncOutboxDispatcher
                 || $cursor->getStartedAt() != new \DateTimeImmutable($startedAt)
                 || $cursor->getLastSyncedAt() <= $cursor->getStartedAt()
                 || $cursor->getLastSyncedAt() <= $event->getUpdatedAt()
+                || $cursor->getLastError() !== null
+                || $cursor->getLastSyncedAt() < new \DateTimeImmutable('-5 minutes')
             ) {
-                throw new StockSyncNotReadyException('Shopware Sales must be synchronized before publishing stock.');
+                throw new StockSyncNotReadyException('Sales must be synchronized before publishing stock.');
+            }
+            if ($publication->getExternalProductId() === null) {
+                throw new \RuntimeException('The published product has no external ID.');
+            }
+            if ($connection->getConnectorKey() === 'woocommerce') {
+                $this->woocommerce->publish(
+                    $connection,
+                    $event->getProduct(),
+                    $publication->getExternalProductId(),
+                    $availableQuantity,
+                    $this->secrets($connection, $entityManager),
+                    $entityManager,
+                );
+                continue;
             }
             if ($connection->getConnectorKey() !== 'shopware') {
                 throw new \RuntimeException(sprintf(

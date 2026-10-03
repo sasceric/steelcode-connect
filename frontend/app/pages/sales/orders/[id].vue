@@ -35,6 +35,7 @@ type OrderDetail = {
   deliveries: { externalId: string, method: string | null, state: string | null, trackingNumber: string | null, trackingCodes: string[], shippingGross: string | null, sourceFields: Record<string, unknown> }[]
 }
 
+const localePath = useLocalePath()
 const route = useRoute()
 const { t } = useI18n()
 const notify = useAppToast()
@@ -234,7 +235,7 @@ const deliveryColumns = computed<TableColumn<OrderDetail['deliveries'][number]>[
             icon="i-lucide-arrow-left"
             color="neutral"
             variant="ghost"
-            to="/sales/orders"
+            :to="localePath('/sales/orders')"
           />
         </template>
         <template #right>
@@ -243,7 +244,7 @@ const deliveryColumns = computed<TableColumn<OrderDetail['deliveries'][number]>[
             icon="i-lucide-clipboard-list"
             color="neutral"
             variant="outline"
-            :to="`/sales/picklists/${route.params.id}`"
+            :to="localePath(`/sales/picklists/${route.params.id}`)"
           >
             {{ t('sales.viewPickList') }}
           </UButton>
@@ -270,7 +271,7 @@ const deliveryColumns = computed<TableColumn<OrderDetail['deliveries'][number]>[
               <div class="space-y-2 text-sm">
                 <NuxtLink
                   v-if="order.customerId"
-                  :to="`/sales/customers/${order.customerId}`"
+                  :to="localePath(`/sales/customers/${order.customerId}`)"
                   class="font-medium text-primary hover:underline"
                 >
                   {{ order.customer }}
@@ -395,8 +396,9 @@ const deliveryColumns = computed<TableColumn<OrderDetail['deliveries'][number]>[
             :description="t('sales.unmatchedProductsDescription', { skus: order.unresolvedSkus.join(', ') })"
           />
           <div class="grid gap-4 md:grid-cols-2">
-            <SourceFieldsCard
+            <CustomFieldSetsCard
               :title="t('nav.customFields')"
+              entity-type="order"
               :fields="order.customFields"
             />
             <SourceFieldsCard

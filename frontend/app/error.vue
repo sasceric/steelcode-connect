@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import type { NuxtError } from '#app'
 
+const nuxtApp = useNuxtApp()
+
 defineProps<{
   error: NuxtError
 }>()
@@ -12,7 +14,7 @@ useSeoMeta({
 
 useHead({
   htmlAttrs: {
-    lang: 'en',
+    lang: computed(() => unref(nuxtApp.$i18n?.locale) || 'bs'),
   },
 })
 </script>

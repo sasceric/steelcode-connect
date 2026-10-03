@@ -11,6 +11,7 @@ use App\Integration\IntegrationImportLogger;
 use App\Integration\IntegrationImportLogReader;
 use App\Message\ImportShopwareProducts;
 use App\Message\ImportShopwareSales;
+use App\Message\ImportWooCommerce;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -92,7 +93,7 @@ final class IntegrationImportController extends AbstractController
     ): JsonResponse {
         $connection = $this->connection($id, $entityManager, true);
         if (
-            $connection->getConnectorKey() !== 'shopware'
+            !in_array($connection->getConnectorKey(), ['shopware', 'woocommerce'], true)
             || !$connection->isEnabled()
             || $connection->getStatus() !== 'active'
         ) {
@@ -130,7 +131,10 @@ final class IntegrationImportController extends AbstractController
         );
         $entityManager->flush();
 
-        $messageBus->dispatch(new ImportShopwareProducts($run->getId()->toRfc4122()));
+        $message = $connection->getConnectorKey() === 'woocommerce'
+            ? new ImportWooCommerce($run->getId()->toRfc4122())
+            : new ImportShopwareProducts($run->getId()->toRfc4122());
+        $messageBus->dispatch($message);
 
         return $this->json([
             'message' => $this->message($translator, 'integration.import_queued'),
@@ -150,7 +154,7 @@ final class IntegrationImportController extends AbstractController
         $settings = $connection->getConfiguration()['importSettings'] ?? [];
         $areas = is_array($settings) && is_array($settings['areas'] ?? null) ? $settings['areas'] : [];
         if (
-            $connection->getConnectorKey() !== 'shopware'
+            !in_array($connection->getConnectorKey(), ['shopware', 'woocommerce'], true)
             || !in_array('channel', $connection->getDirections(), true)
             || !$connection->isEnabled()
             || $connection->getStatus() !== 'active'
@@ -177,7 +181,10 @@ final class IntegrationImportController extends AbstractController
         $entityManager->persist($run);
         $importLogger->info($run, 'queued', 'integrationLog.salesQueued');
         $entityManager->flush();
-        $messageBus->dispatch(new ImportShopwareSales($run->getId()->toRfc4122()));
+        $message = $connection->getConnectorKey() === 'woocommerce'
+            ? new ImportWooCommerce($run->getId()->toRfc4122())
+            : new ImportShopwareSales($run->getId()->toRfc4122());
+        $messageBus->dispatch($message);
 
         return $this->json([
             'message' => $this->message($translator, 'integration.sales_import_queued'),
@@ -222,6 +229,16 @@ final class IntegrationImportController extends AbstractController
         );
         $entityManager->flush();
 
+        if (in_array($run->getType(), ['export', 'export_preview'], true)) {
+            $entityManager->getConnection()->update('integration_export_plans', [
+                'status' => 'cancelled',
+            ], [
+                'run_id' => (string) $run->getId(),
+                'connection_id' => (string) $connection->getId(),
+                'tenant_id' => (string) $connection->getTenant()->getId(),
+            ]);
+        }
+
         return $this->json([
             'message' => $this->message($translator, 'integration.import_cancelled'),
             'run' => $this->payload($run),
@@ -260,7 +277,7 @@ final class IntegrationImportController extends AbstractController
         }
 
         $membership = $entityManager->getRepository(TenantMembership::class)
-            ->findOneBy(['user' => $user]);
+            ->forUser($user);
         if (
             !$membership instanceof TenantMembership
             || ($ownerRequired && $membership->getRole() !== 'owner')
@@ -299,6 +316,7 @@ final class IntegrationImportController extends AbstractController
             'failedItems' => $run->getFailedItems(),
             'failureReason' => $run->getFailureReason(),
             'createdAt' => $run->getCreatedAt()->format(DATE_ATOM),
+            'updatedAt' => $run->getUpdatedAt()->format(DATE_ATOM),
             'startedAt' => $run->getStartedAt()?->format(DATE_ATOM),
             'completedAt' => $run->getCompletedAt()?->format(DATE_ATOM),
         ];

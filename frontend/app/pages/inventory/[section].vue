@@ -21,6 +21,7 @@ type Warehouse = {
   default: boolean
 }
 
+const localePath = useLocalePath()
 const route = useRoute()
 const { t } = useI18n()
 const notify = useAppToast()
@@ -38,6 +39,7 @@ const warehousesPage = ref(1)
 const stockPagination = reactive({ pageSize: 25 })
 const warehousesPagination = reactive({ pageSize: 25 })
 const warehouseOpen = ref(false)
+const warehouseSaveError = ref('')
 const saving = ref(false)
 const editingWarehouse = ref<Warehouse | null>(null)
 const warehouseForm = reactive({
@@ -111,7 +113,7 @@ const stockColumns: TableColumn<StockItem>[] = [
         'button',
         {
           class: 'cursor-pointer font-medium text-highlighted hover:text-primary',
-          onClick: () => navigateTo(`/catalogue/products/${row.original.productId}`)
+          onClick: () => navigateTo(localePath(`/catalogue/products/${row.original.productId}`))
         },
         row.original.name
       )
@@ -156,7 +158,7 @@ const warehouseColumns: TableColumn<Warehouse>[] = [
         'button',
         {
           class: 'cursor-pointer font-medium text-highlighted hover:text-primary',
-          onClick: () => navigateTo(`/inventory/warehouses/${row.original.id}`)
+          onClick: () => navigateTo(localePath(`/inventory/warehouses/${row.original.id}`))
         },
         row.original.name
       )
@@ -218,6 +220,7 @@ const warehouseColumns: TableColumn<Warehouse>[] = [
 
 const openWarehouse = (warehouse?: Warehouse) => {
   warehouseValidation.clear()
+  warehouseSaveError.value = ''
   editingWarehouse.value = warehouse || null
   Object.assign(
     warehouseForm,
@@ -240,6 +243,7 @@ const openWarehouse = (warehouse?: Warehouse) => {
   warehouseOpen.value = true
 }
 const saveWarehouse = async () => {
+  warehouseSaveError.value = ''
   const fields = [
     {
       field: 'name',
@@ -285,6 +289,10 @@ const saveWarehouse = async () => {
     warehouseOpen.value = false
     notify.success(t('inventory.warehouseSaved'), t('common.changesSaved'))
   } catch (error: unknown) {
+    const response = (error as { data?: { message?: string, blockers?: string[] } }).data
+    warehouseSaveError.value = response?.blockers?.length
+      ? t('inventory.warehouseDeactivationBlocked')
+      : response?.message || t('common.tryAgain')
     warehouseValidation.notifyApiError(
       error,
       notify,
@@ -416,7 +424,19 @@ watch(section, () => {
     :title="editingWarehouse ? t('common.edit') : t('inventory.addWarehouse')"
   >
     <template #body>
-      <UForm class="space-y-5" @submit.prevent="saveWarehouse">
+      <UForm
+        :state="warehouseForm"
+        class="space-y-5"
+        @submit="saveWarehouse"
+      >
+        <UAlert
+          v-if="warehouseSaveError"
+          color="error"
+          variant="subtle"
+          icon="i-lucide-triangle-alert"
+          :title="t('inventory.warehouseSaveFailed')"
+          :description="warehouseSaveError"
+        />
         <UFormField
           :label="t('inventory.warehouse')"
           :error="warehouseValidationErrors.name"

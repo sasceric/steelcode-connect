@@ -21,6 +21,8 @@ use Symfony\Component\Uid\Uuid;
 )]
 class ProductMedia
 {
+    use CatalogueAssignmentSources;
+
     #[ORM\Id]
     #[ORM\Column(type: 'uuid')]
     private Uuid $id;

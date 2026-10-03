@@ -3,6 +3,7 @@
 namespace App\Command;
 
 use App\Entity\InventorySyncOutbox;
+use App\Entity\Tenant;
 use App\Service\StockSyncOutboxDispatcher;
 use App\Service\StockSyncNotReadyException;
 use Doctrine\DBAL\LockMode;
@@ -12,6 +13,7 @@ use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
 use Symfony\Component\Console\Input\InputOption;
 use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Uid\Uuid;
 
 #[AsCommand(
     name: 'app:stock-sync:dispatch',
@@ -29,13 +31,30 @@ final class DispatchStockSyncOutboxCommand extends Command
     protected function configure(): void
     {
         $this->addOption('limit', null, InputOption::VALUE_REQUIRED, 'Maximum events to process.', '100');
+        $this->addOption('tenant', null, InputOption::VALUE_REQUIRED, 'Process only this tenant; omitted for the global scheduler.');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
     {
         $limit = max(1, min(1000, (int) $input->getOption('limit')));
+        $criteria = ['status' => ['pending', 'failed']];
+        $tenantId = $input->getOption('tenant');
+        if ($tenantId !== null) {
+            if (!Uuid::isValid($tenantId)) {
+                $output->writeln('<error>A valid tenant UUID is required.</error>');
+
+                return Command::INVALID;
+            }
+            $tenant = $this->entityManager->find(Tenant::class, Uuid::fromString($tenantId));
+            if (!$tenant instanceof Tenant) {
+                $output->writeln('<error>Tenant not found.</error>');
+
+                return Command::INVALID;
+            }
+            $criteria['tenant'] = $tenant;
+        }
         $events = $this->entityManager->getRepository(InventorySyncOutbox::class)->findBy(
-            ['status' => ['pending', 'failed']],
+            $criteria,
             ['updatedAt' => 'ASC'],
             $limit,
         );

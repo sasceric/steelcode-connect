@@ -401,16 +401,7 @@ final class ShopwareSalesMapper
     /** @param array<string, mixed> $fields @return array<string, mixed> */
     private function safeFields(array $fields): array
     {
-        $safe = [];
-        foreach ($fields as $key => $value) {
-            if (is_string($key) && preg_match('/password|token|secret|hash|credential|api.?key|access.?key|auth.?code|authorization|session.?id|deep.?link|remote.?address|ip.?address|user.?agent/i', $key)) {
-                continue;
-            }
-
-            $safe[$key] = is_array($value) ? $this->safeFields($value) : $value;
-        }
-
-        return $safe;
+        return SourcePayloadSanitizer::sanitize($fields);
     }
 
     /** @param array<string, mixed> $source @return array<string, mixed> */

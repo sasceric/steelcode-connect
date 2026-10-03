@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
 
+const localePath = useLocalePath()
 const route = useRoute()
 const toast = useToast()
 const { t } = useI18n()
@@ -14,7 +15,7 @@ const links = computed(
         {
           label: t('nav.home'),
           icon: 'i-lucide-house',
-          to: '/',
+          to: localePath('/'),
           onSelect: () => {
             open.value = false
           },
@@ -22,7 +23,7 @@ const links = computed(
         {
           label: t('nav.integrations'),
           icon: 'i-lucide-plug-zap',
-          to: '/integrations',
+          to: localePath('/integrations'),
           onSelect: () => {
             open.value = false
           },
@@ -36,7 +37,7 @@ const links = computed(
             {
               label: t('nav.products'),
               icon: 'i-lucide-package',
-              to: '/catalogue/products',
+              to: localePath('/catalogue/products'),
               onSelect: () => {
                 open.value = false
               },
@@ -44,7 +45,7 @@ const links = computed(
             {
               label: t('nav.categories'),
               icon: 'i-lucide-folder-tree',
-              to: '/catalogue/categories',
+              to: localePath('/catalogue/categories'),
               onSelect: () => {
                 open.value = false
               },
@@ -52,7 +53,7 @@ const links = computed(
             {
               label: t('nav.manufacturers'),
               icon: 'i-lucide-factory',
-              to: '/catalogue/manufacturers',
+              to: localePath('/catalogue/manufacturers'),
               onSelect: () => {
                 open.value = false
               },
@@ -60,7 +61,7 @@ const links = computed(
             {
               label: t('nav.attributes'),
               icon: 'i-lucide-list-tree',
-              to: '/catalogue/attributes',
+              to: localePath('/catalogue/attributes'),
               onSelect: () => {
                 open.value = false
               },
@@ -76,7 +77,7 @@ const links = computed(
             {
               label: t('nav.suppliers'),
               icon: 'i-lucide-truck',
-              to: '/inventory/suppliers',
+              to: localePath('/inventory/suppliers'),
               onSelect: () => {
                 open.value = false
               },
@@ -84,7 +85,7 @@ const links = computed(
             {
               label: t('purchasing.offers'),
               icon: 'i-lucide-tag',
-              to: '/inventory/supplier-offers',
+              to: localePath('/inventory/supplier-offers'),
               onSelect: () => {
                 open.value = false
               },
@@ -92,7 +93,7 @@ const links = computed(
             {
               label: t('purchasing.orders'),
               icon: 'i-lucide-clipboard-list',
-              to: '/inventory/purchase-orders',
+              to: localePath('/inventory/purchase-orders'),
               onSelect: () => {
                 open.value = false
               },
@@ -100,7 +101,7 @@ const links = computed(
             {
               label: t('supplierInvoices.title'),
               icon: 'i-lucide-file-check-2',
-              to: '/inventory/supplier-invoices',
+              to: localePath('/inventory/supplier-invoices'),
               onSelect: () => {
                 open.value = false
               },
@@ -108,7 +109,7 @@ const links = computed(
             {
               label: t('replenishment.title'),
               icon: 'i-lucide-chart-no-axes-combined',
-              to: '/inventory/replenishment',
+              to: localePath('/inventory/replenishment'),
               onSelect: () => {
                 open.value = false
               },
@@ -116,7 +117,7 @@ const links = computed(
             {
               label: t('nav.stock'),
               icon: 'i-lucide-boxes',
-              to: '/inventory/stock',
+              to: localePath('/inventory/stock'),
               onSelect: () => {
                 open.value = false
               },
@@ -124,7 +125,7 @@ const links = computed(
             {
               label: t('nav.warehouses'),
               icon: 'i-lucide-warehouse',
-              to: '/inventory/warehouses',
+              to: localePath('/inventory/warehouses'),
               onSelect: () => {
                 open.value = false
               },
@@ -132,7 +133,7 @@ const links = computed(
             {
               label: t('nav.transfers'),
               icon: 'i-lucide-arrow-left-right',
-              to: '/inventory/transfers',
+              to: localePath('/inventory/transfers'),
               onSelect: () => {
                 open.value = false
               },
@@ -140,7 +141,7 @@ const links = computed(
             {
               label: t('nav.stockCounts'),
               icon: 'i-lucide-clipboard-check',
-              to: '/inventory/counts',
+              to: localePath('/inventory/counts'),
               onSelect: () => {
                 open.value = false
               },
@@ -148,7 +149,7 @@ const links = computed(
             {
               label: t('operationsExceptions.title'),
               icon: 'i-lucide-triangle-alert',
-              to: '/inventory/exceptions',
+              to: localePath('/inventory/exceptions'),
               onSelect: () => {
                 open.value = false
               },
@@ -164,7 +165,7 @@ const links = computed(
             {
               label: t('nav.orders'),
               icon: 'i-lucide-receipt-text',
-              to: '/sales/orders',
+              to: localePath('/sales/orders'),
               onSelect: () => {
                 open.value = false
               },
@@ -172,7 +173,7 @@ const links = computed(
             {
               label: t('nav.pickLists'),
               icon: 'i-lucide-clipboard-list',
-              to: '/sales/picklists',
+              to: localePath('/sales/picklists'),
               onSelect: () => {
                 open.value = false
               },
@@ -180,7 +181,7 @@ const links = computed(
             {
               label: t('nav.customers'),
               icon: 'i-lucide-users',
-              to: '/sales/customers',
+              to: localePath('/sales/customers'),
               onSelect: () => {
                 open.value = false
               },
@@ -196,7 +197,7 @@ const links = computed(
             {
               label: t('nav.details'),
               icon: 'i-lucide-building',
-              to: '/company',
+              to: localePath('/company'),
               exact: true,
               onSelect: () => {
                 open.value = false
@@ -205,7 +206,7 @@ const links = computed(
             {
               label: t('nav.addresses'),
               icon: 'i-lucide-map-pin',
-              to: '/company/addresses',
+              to: localePath('/company/addresses'),
               onSelect: () => {
                 open.value = false
               },
@@ -213,7 +214,7 @@ const links = computed(
             {
               label: t('nav.paymentMethods'),
               icon: 'i-lucide-credit-card',
-              to: '/company/payment-methods',
+              to: localePath('/company/payment-methods'),
               onSelect: () => {
                 open.value = false
               },
@@ -221,7 +222,7 @@ const links = computed(
             {
               label: t('nav.billing'),
               icon: 'i-lucide-receipt-text',
-              to: '/company/billing',
+              to: localePath('/company/billing'),
               onSelect: () => {
                 open.value = false
               },
@@ -229,7 +230,7 @@ const links = computed(
             {
               label: t('nav.pricingPlans'),
               icon: 'i-lucide-badge-dollar-sign',
-              to: '/company/pricing-plans',
+              to: localePath('/company/pricing-plans'),
               onSelect: () => {
                 open.value = false
               },
@@ -245,7 +246,7 @@ const links = computed(
             {
               label: t('nav.taxes'),
               icon: 'i-lucide-percent',
-              to: '/shop/taxes',
+              to: localePath('/shop/taxes'),
               onSelect: () => {
                 open.value = false
               },
@@ -253,7 +254,7 @@ const links = computed(
             {
               label: t('nav.units'),
               icon: 'i-lucide-ruler',
-              to: '/shop/units',
+              to: localePath('/shop/units'),
               onSelect: () => {
                 open.value = false
               },
@@ -261,7 +262,7 @@ const links = computed(
             {
               label: t('nav.deliveryTimes'),
               icon: 'i-lucide-truck',
-              to: '/shop/delivery-times',
+              to: localePath('/shop/delivery-times'),
               onSelect: () => {
                 open.value = false
               },
@@ -269,7 +270,7 @@ const links = computed(
             {
               label: t('nav.customFields'),
               icon: 'i-lucide-panels-top-left',
-              to: '/shop/custom-fields',
+              to: localePath('/shop/custom-fields'),
               onSelect: () => {
                 open.value = false
               },
@@ -278,7 +279,7 @@ const links = computed(
         },
         {
           label: t('nav.settings'),
-          to: '/settings',
+          to: localePath('/settings'),
           icon: 'i-lucide-settings',
           defaultOpen: true,
           type: 'trigger',
@@ -286,7 +287,7 @@ const links = computed(
             {
               label: t('nav.general'),
               icon: 'i-lucide-settings-2',
-              to: '/settings',
+              to: localePath('/settings'),
               exact: true,
               onSelect: () => {
                 open.value = false
@@ -295,7 +296,7 @@ const links = computed(
             {
               label: t('nav.profile'),
               icon: 'i-lucide-user',
-              to: '/settings/profile',
+              to: localePath('/settings/profile'),
               onSelect: () => {
                 open.value = false
               },
@@ -303,7 +304,7 @@ const links = computed(
             {
               label: t('nav.translations'),
               icon: 'i-lucide-languages',
-              to: '/settings/translations',
+              to: localePath('/settings/translations'),
               onSelect: () => {
                 open.value = false
               },
@@ -311,7 +312,7 @@ const links = computed(
             {
               label: t('nav.members'),
               icon: 'i-lucide-users',
-              to: '/settings/members',
+              to: localePath('/settings/members'),
               onSelect: () => {
                 open.value = false
               },
@@ -319,7 +320,7 @@ const links = computed(
             {
               label: t('nav.notifications'),
               icon: 'i-lucide-bell',
-              to: '/settings/notifications',
+              to: localePath('/settings/notifications'),
               onSelect: () => {
                 open.value = false
               },
@@ -327,7 +328,7 @@ const links = computed(
             {
               label: t('nav.security'),
               icon: 'i-lucide-shield',
-              to: '/settings/security',
+              to: localePath('/settings/security'),
               onSelect: () => {
                 open.value = false
               },

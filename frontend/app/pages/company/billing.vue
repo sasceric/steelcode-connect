@@ -1,4 +1,5 @@
 <script setup lang="ts">
+const localePath = useLocalePath()
 const company = useCompany()
 const { invoices, paymentMethods, subscription } = company
 const { t } = useI18n()
@@ -39,7 +40,7 @@ onMounted(async () => {
           {{ subscription.interval === 'annual' ? t('company.year') : t('company.month') }}
         </p>
         <UButton
-          to="/company/pricing-plans"
+          :to="localePath('/company/pricing-plans')"
           :label="t('company.changePlan')"
           size="sm"
           variant="subtle"
@@ -55,7 +56,7 @@ onMounted(async () => {
           {{ defaultPaymentMethod?.label || t('company.noPaymentMethod') }}
         </p>
         <UButton
-          to="/company/payment-methods"
+          :to="localePath('/company/payment-methods')"
           :label="t('company.managePaymentMethods')"
           size="sm"
           variant="subtle"

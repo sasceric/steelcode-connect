@@ -1,3 +1,4 @@
 <script setup lang="ts">
-await navigateTo('/inventory/stock', { replace: true })
+const localePath = useLocalePath()
+await navigateTo(localePath('/inventory/stock'), { replace: true })
 </script>

@@ -21,6 +21,7 @@ type CategoryNode = Category & {
   childrenLoading: boolean
 }
 
+const localePath = useLocalePath()
 const { t } = useI18n()
 const route = useRoute()
 const auth = useAuth()
@@ -122,7 +123,7 @@ const create = async () => {
     await refresh()
     open.value = false
     name.value = ''
-    await navigateTo(`/catalogue/categories/${category.id}`)
+    await navigateTo(localePath(`/catalogue/categories/${category.id}`))
   } catch (error: any) {
     validation.notifyApiError(error, toast, t('common.error'), t('common.tryAgain'))
   } finally {

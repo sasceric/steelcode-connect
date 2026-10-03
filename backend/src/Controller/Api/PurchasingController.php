@@ -244,8 +244,14 @@ final class PurchasingController extends AbstractController
         } catch (\DomainException $exception) {
             return $this->problem($exception->getMessage());
         }
-        $entityManager->persist($order);
-        $entityManager->flush();
+        try {
+            $entityManager->wrapInTransaction(function () use ($tenant, $warehouse, $order, $entityManager): void {
+                $this->inventory->lockWarehouse($tenant, $warehouse, $entityManager);
+                $entityManager->persist($order);
+            });
+        } catch (\DomainException $exception) {
+            return $this->problem($exception->getMessage(), Response::HTTP_CONFLICT);
+        }
 
         return $this->json(['order' => $this->orderPayload($order)], Response::HTTP_CREATED);
     }
@@ -263,6 +269,7 @@ final class PurchasingController extends AbstractController
             $entityManager->refresh($order);
             $supplier = $this->findSupplier((string) ($data['supplierId'] ?? ''), $tenant, $entityManager);
             $warehouse = $this->findWarehouse((string) ($data['warehouseId'] ?? ''), $tenant, $entityManager);
+            $this->inventory->lockWarehouse($tenant, $warehouse, $entityManager);
             $currency = strtoupper(trim((string) ($data['currency'] ?? '')));
             $items = $data['items'] ?? null;
             if (!$supplier->isActive() || !$warehouse->isActive() || !preg_match('/^[A-Z]{3}$/', $currency) || !is_array($items) || $items === []) {
@@ -1155,7 +1162,7 @@ final class PurchasingController extends AbstractController
         if (!$user instanceof User) {
             throw $this->createAccessDeniedException();
         }
-        $membership = $entityManager->getRepository(TenantMembership::class)->findOneBy(['user' => $user]);
+        $membership = $entityManager->getRepository(TenantMembership::class)->forUser($user);
         if (!$membership instanceof TenantMembership || ($owner && $membership->getRole() !== 'owner')) {
             throw $this->createAccessDeniedException();
         }

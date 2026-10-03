@@ -4,6 +4,7 @@ namespace App\MessageHandler;
 
 use App\Message\QueueShopwareSalesSync;
 use App\Message\SyncShopwareSalesConnection;
+use App\Message\SyncWooCommerceSalesConnection;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Component\Messenger\Attribute\AsMessageHandler;
 use Symfony\Component\Messenger\MessageBusInterface;
@@ -21,9 +22,9 @@ final class QueueShopwareSalesSyncHandler
     {
         $connections = $this->entityManager->getConnection()->executeQuery(
             <<<'SQL'
-SELECT id
+SELECT id, tenant_id, connector_key
 FROM integration_connections
-WHERE connector_key = 'shopware'
+WHERE connector_key IN ('shopware', 'woocommerce')
   AND enabled = TRUE
   AND status = 'active'
   AND configuration->'importSettings'->>'salesContinuousSync' = 'true'
@@ -33,9 +34,11 @@ WHERE connector_key = 'shopware'
 SQL,
         );
 
-        while (($id = $connections->fetchOne()) !== false) {
-            if (is_string($id)) {
-                $this->bus->dispatch(new SyncShopwareSalesConnection($id));
+        while (($row = $connections->fetchAssociative()) !== false) {
+            if ($row['connector_key'] === 'woocommerce') {
+                $this->bus->dispatch(new SyncWooCommerceSalesConnection($row['tenant_id'], $row['id']));
+            } else {
+                $this->bus->dispatch(new SyncShopwareSalesConnection($row['id']));
             }
         }
     }

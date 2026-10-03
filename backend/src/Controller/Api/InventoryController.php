@@ -159,16 +159,36 @@ final class InventoryController extends AbstractController
             return $this->validation($translator, ['code']);
         }
         $isDefault = $warehouse->getCode() === 'default';
-        $warehouse->update(
-            $code,
-            $name,
-            $isDefault ? true : (bool) ($data['active'] ?? $warehouse->isActive()),
-            $isDefault
-                ? true
-                : (bool) ($data['fulfillmentEnabled'] ?? $warehouse->isFulfillmentEnabled()),
-            $isDefault ? 0 : max(0, (int) ($data['priority'] ?? $warehouse->getPriority())),
-        );
-        $entityManager->flush();
+        $connection = $entityManager->getConnection();
+        $connection->beginTransaction();
+        try {
+            $entityManager->lock($warehouse, LockMode::PESSIMISTIC_WRITE);
+            $entityManager->refresh($warehouse);
+            $active = $isDefault ? true : (bool) ($data['active'] ?? $warehouse->isActive());
+            if ($warehouse->isActive() && !$active) {
+                $blockers = $this->inventory->warehouseDeactivationBlockers($tenant, $warehouse, $entityManager);
+                if ($blockers !== []) {
+                    $connection->rollBack();
+
+                    return $this->json([
+                        'message' => $translator->trans('inventory.warehouse_deactivation_blocked'),
+                        'blockers' => $blockers,
+                    ], Response::HTTP_CONFLICT);
+                }
+            }
+            $warehouse->update(
+                $code,
+                $name,
+                $active,
+                $isDefault ? true : (bool) ($data['fulfillmentEnabled'] ?? $warehouse->isFulfillmentEnabled()),
+                $isDefault ? 0 : max(0, (int) ($data['priority'] ?? $warehouse->getPriority())),
+            );
+            $entityManager->flush();
+            $connection->commit();
+        } catch (\Throwable $exception) {
+            $connection->rollBack();
+            throw $exception;
+        }
 
         return $this->json(['warehouse' => $this->warehousePayload($warehouse)]);
     }
@@ -569,8 +589,14 @@ final class InventoryController extends AbstractController
                 number_format((float) $item['countedQuantity'], 4, '.', ''),
             );
         }
-        $entityManager->persist($count);
-        $entityManager->flush();
+        try {
+            $entityManager->wrapInTransaction(function () use ($tenant, $warehouse, $count, $entityManager): void {
+                $this->inventory->lockWarehouse($tenant, $warehouse, $entityManager);
+                $entityManager->persist($count);
+            });
+        } catch (\DomainException $exception) {
+            return $this->json(['message' => $exception->getMessage()], Response::HTTP_CONFLICT);
+        }
 
         return $this->json(['count' => $this->countPayload($count)], Response::HTTP_CREATED);
     }
@@ -731,8 +757,18 @@ final class InventoryController extends AbstractController
                 number_format((float) $item['quantity'], 4, '.', ''),
             );
         }
-        $entityManager->persist($transfer);
-        $entityManager->flush();
+        try {
+            $entityManager->wrapInTransaction(function () use ($tenant, $source, $destination, $transfer, $entityManager): void {
+                $warehouses = [$source, $destination];
+                usort($warehouses, static fn (Warehouse $a, Warehouse $b): int => strcmp((string) $a->getId(), (string) $b->getId()));
+                foreach ($warehouses as $warehouse) {
+                    $this->inventory->lockWarehouse($tenant, $warehouse, $entityManager);
+                }
+                $entityManager->persist($transfer);
+            });
+        } catch (\DomainException $exception) {
+            return $this->json(['message' => $exception->getMessage()], Response::HTTP_CONFLICT);
+        }
 
         return $this->json(['transfer' => $this->transferPayload($transfer)], Response::HTTP_CREATED);
     }
@@ -960,7 +996,7 @@ final class InventoryController extends AbstractController
         $user = $this->getUser();
         if (!$user instanceof User) {
             throw $this->createAccessDeniedException();
-        } $membership = $entityManager->getRepository(TenantMembership::class)->findOneBy(['user' => $user]);
+        } $membership = $entityManager->getRepository(TenantMembership::class)->forUser($user);
         if (!$membership instanceof TenantMembership || ($owner && $membership->getRole() !== 'owner')) {
             throw $this->createAccessDeniedException();
         }

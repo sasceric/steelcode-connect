@@ -40,6 +40,7 @@ type Customer = {
   orders: { id: string, number: string, status: string, orderedAt: string | null }[]
 }
 
+const localePath = useLocalePath()
 const route = useRoute()
 const { t } = useI18n()
 const selectedTab = useRouteTab('overview')
@@ -133,7 +134,7 @@ const orderColumns = computed<TableColumn<Customer['orders'][number]>[]>(() => [
       'button',
       {
         class: 'cursor-pointer font-medium text-primary hover:underline',
-        onClick: () => navigateTo(`/sales/orders/${row.original.id}`)
+        onClick: () => navigateTo(localePath(`/sales/orders/${row.original.id}`))
       },
       row.original.number
     )
@@ -152,7 +153,7 @@ const orderColumns = computed<TableColumn<Customer['orders'][number]>[]>(() => [
             icon="i-lucide-arrow-left"
             color="neutral"
             variant="ghost"
-            to="/sales/customers"
+            :to="localePath('/sales/customers')"
           />
         </template>
       </UDashboardNavbar>
@@ -234,8 +235,9 @@ const orderColumns = computed<TableColumn<Customer['orders'][number]>[]>(() => [
               <dd>{{ sourceText(source.birthday) }}</dd>
             </dl>
           </UCard>
-          <SourceFieldsCard
+          <CustomFieldSetsCard
             :title="t('nav.customFields')"
+            entity-type="customer"
             :fields="customer.customFields"
           />
           <SourceFieldsCard

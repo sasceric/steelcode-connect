@@ -13,12 +13,34 @@ framework:
                     multiplier: 2
                     max_delay: 30000
             failed: 'doctrine://default?queue_name=failed&auto_setup=0'
+            control:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                options: { queue_name: control }
+            sales:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                options: { queue_name: sales }
+                retry_strategy: { service: App\Integration\IntegrationRetryStrategy }
+            stock:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                options: { queue_name: stock }
+                retry_strategy: { service: App\Integration\IntegrationRetryStrategy }
+            catalogue:
+                dsn: '%env(MESSENGER_TRANSPORT_DSN)%'
+                options: { queue_name: catalogue }
+                retry_strategy: { service: App\Integration\IntegrationRetryStrategy }
 
         routing:
+            'App\Message\QueueShopwareCatalogueSync': control
+            'App\Message\ReconcileShopwareCatalogue': catalogue
+            'App\Message\ExportShopwareCatalogue': async
+            'App\Message\ExportWooCommerceCatalogue': async
+            'App\Message\ImportWooCommerce': async
             'App\Message\ImportShopwareProducts': async
             'App\Message\ImportShopwareSales': async
-            'App\Message\QueueShopwareSalesSync': async
-            'App\Message\SyncShopwareSalesConnection': async
+            'App\Message\QueueShopwareSalesSync': control
+            'App\Message\SyncShopwareSalesConnection': sales
+            'App\Message\SyncWooCommerceSalesConnection': sales
+            'Symfony\Component\Console\Messenger\RunCommandMessage': stock
 
 # when@test:
 #    framework:

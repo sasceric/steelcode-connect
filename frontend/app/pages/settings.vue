@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
 
+const localePath = useLocalePath()
 const { t } = useI18n()
 
 const links = computed(
@@ -10,33 +11,33 @@ const links = computed(
         {
           label: t('nav.general'),
           icon: 'i-lucide-settings-2',
-          to: '/settings',
+          to: localePath('/settings'),
           exact: true
         },
         {
           label: t('nav.profile'),
           icon: 'i-lucide-user',
-          to: '/settings/profile'
+          to: localePath('/settings/profile')
         },
         {
           label: t('nav.translations'),
           icon: 'i-lucide-languages',
-          to: '/settings/translations'
+          to: localePath('/settings/translations')
         },
         {
           label: t('nav.members'),
           icon: 'i-lucide-users',
-          to: '/settings/members'
+          to: localePath('/settings/members')
         },
         {
           label: t('nav.notifications'),
           icon: 'i-lucide-bell',
-          to: '/settings/notifications'
+          to: localePath('/settings/notifications')
         },
         {
           label: t('nav.security'),
           icon: 'i-lucide-shield',
-          to: '/settings/security'
+          to: localePath('/settings/security')
         }
       ],
       [

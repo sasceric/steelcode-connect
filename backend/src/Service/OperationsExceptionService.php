@@ -107,6 +107,12 @@ FROM sales_orders orders
 WHERE orders.tenant_id = :tenantId
   AND orders.status NOT IN ('historical', 'cancelled')
   AND (
+      (
+          orders.source_payload::jsonb->>'shipmentQuantitiesUnavailable' = 'true'
+          AND orders.source_payload::jsonb->>'state' = 'completed'
+          AND orders.status <> 'fulfilled'
+      )
+      OR
       EXISTS (
           SELECT 1 FROM sales_order_deliveries delivery
           WHERE delivery.sales_order_id = orders.id AND delivery.state = 'shipped_partially'

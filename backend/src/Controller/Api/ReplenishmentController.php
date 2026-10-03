@@ -422,7 +422,7 @@ final class ReplenishmentController extends AbstractController
         if (!$user instanceof User) {
             throw $this->createAccessDeniedException();
         }
-        $membership = $entityManager->getRepository(TenantMembership::class)->findOneBy(['user' => $user]);
+        $membership = $entityManager->getRepository(TenantMembership::class)->forUser($user);
         if (!$membership instanceof TenantMembership || ($owner && $membership->getRole() !== 'owner')) {
             throw $this->createAccessDeniedException();
         }

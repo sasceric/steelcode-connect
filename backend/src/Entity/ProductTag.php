@@ -10,6 +10,8 @@ use Symfony\Component\Uid\Uuid;
 #[ORM\UniqueConstraint(name: 'uniq_product_tag', columns: ['product_id', 'tag_id'])]
 class ProductTag
 {
+    use CatalogueAssignmentSources;
+
     #[ORM\Id]
     #[ORM\Column(type: 'uuid')]
     private Uuid $id;

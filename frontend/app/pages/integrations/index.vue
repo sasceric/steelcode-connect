@@ -38,6 +38,7 @@ type ImportRun = {
   completedAt: string | null
 }
 
+const localePath = useLocalePath()
 const { t } = useI18n()
 const toast = useAppToast()
 const open = ref(false)
@@ -337,7 +338,7 @@ const askToRemove = (connection: Connection) => {
 }
 
 const openConfiguration = (connection: Connection) =>
-  navigateTo(`/integrations/${connection.id}`)
+  navigateTo(localePath(`/integrations/${connection.id}`))
 
 const connectionActions = (connection: Connection) => [
   [

@@ -4,6 +4,7 @@ import type { FormSubmitEvent } from '@nuxt/ui'
 
 definePageMeta({ layout: false })
 
+const localePath = useLocalePath()
 const route = useRoute()
 const toast = useToast()
 const { t } = useI18n()
@@ -23,7 +24,7 @@ const submit = async (event: FormSubmitEvent<Schema>) => {
       body: { token: token.value, password: event.data.password },
     })
     toast.add({ title: t('auth.passwordReset'), color: 'success' })
-    await navigateTo('/login')
+    await navigateTo(localePath('/login'))
   } catch (error) {
     toast.add({
       title: t('auth.unableToResetPassword'),

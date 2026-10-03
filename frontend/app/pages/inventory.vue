@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
 
+const localePath = useLocalePath()
 const { t } = useI18n()
 
 const links = computed(
@@ -10,52 +11,52 @@ const links = computed(
         {
           label: t('nav.suppliers'),
           icon: 'i-lucide-truck',
-          to: '/inventory/suppliers'
+          to: localePath('/inventory/suppliers')
         },
         {
           label: t('purchasing.offers'),
           icon: 'i-lucide-tag',
-          to: '/inventory/supplier-offers'
+          to: localePath('/inventory/supplier-offers')
         },
         {
           label: t('purchasing.orders'),
           icon: 'i-lucide-clipboard-list',
-          to: '/inventory/purchase-orders'
+          to: localePath('/inventory/purchase-orders')
         },
         {
           label: t('supplierInvoices.title'),
           icon: 'i-lucide-file-check-2',
-          to: '/inventory/supplier-invoices'
+          to: localePath('/inventory/supplier-invoices')
         },
         {
           label: t('replenishment.title'),
           icon: 'i-lucide-chart-no-axes-combined',
-          to: '/inventory/replenishment'
+          to: localePath('/inventory/replenishment')
         },
         {
           label: t('nav.stock'),
           icon: 'i-lucide-boxes',
-          to: '/inventory/stock'
+          to: localePath('/inventory/stock')
         },
         {
           label: t('nav.warehouses'),
           icon: 'i-lucide-warehouse',
-          to: '/inventory/warehouses'
+          to: localePath('/inventory/warehouses')
         },
         {
           label: t('nav.transfers'),
           icon: 'i-lucide-arrow-left-right',
-          to: '/inventory/transfers'
+          to: localePath('/inventory/transfers')
         },
         {
           label: t('nav.stockCounts'),
           icon: 'i-lucide-clipboard-check',
-          to: '/inventory/counts'
+          to: localePath('/inventory/counts')
         },
         {
           label: t('operationsExceptions.title'),
           icon: 'i-lucide-triangle-alert',
-          to: '/inventory/exceptions'
+          to: localePath('/inventory/exceptions')
         }
       ]
     ] satisfies NavigationMenuItem[][]

@@ -35,5 +35,18 @@ services:
         arguments:
             $appSecret: '%kernel.secret%'
 
+    App\Integration\CatalogueExportReferences:
+        arguments:
+            $cache: '@cache.app'
+
+    # OAuth query signatures must not enter profiler or HTTP-client URL logs.
+    woocommerce.http_client:
+        class: Symfony\Contracts\HttpClient\HttpClientInterface
+        factory: ['Symfony\Component\HttpClient\HttpClient', 'create']
+
+    App\Integration\WooCommerceClient:
+        arguments:
+            $httpClient: '@woocommerce.http_client'
+
     # add more service definitions when explicit configuration is needed
     # please note that last definitions always *replace* previous ones

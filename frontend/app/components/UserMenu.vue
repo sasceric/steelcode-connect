@@ -5,6 +5,7 @@ defineProps<{
   collapsed?: boolean
 }>()
 
+const localePath = useLocalePath()
 const colorMode = useColorMode()
 const appConfig = useAppConfig()
 const auth = useAuth()
@@ -60,7 +61,7 @@ const items = computed<DropdownMenuItem[][]>(() => [
     {
       label: 'Settings',
       icon: 'i-lucide-settings',
-      to: '/settings',
+      to: localePath('/settings'),
     },
   ],
   [
@@ -204,7 +205,7 @@ const items = computed<DropdownMenuItem[][]>(() => [
     {
       label: 'Log out',
       icon: 'i-lucide-log-out',
-      to: '/logout',
+      to: localePath('/logout'),
     },
   ],
 ])

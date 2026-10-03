@@ -181,9 +181,7 @@ final class ProductChannelPublicationController extends AbstractController
             throw $this->createAccessDeniedException();
         }
 
-        $membership = $entityManager->getRepository(TenantMembership::class)->findOneBy([
-            'user' => $user,
-        ]);
+        $membership = $entityManager->getRepository(TenantMembership::class)->forUser($user);
         if (
             !$membership instanceof TenantMembership
             || ($ownerRequired && $membership->getRole() !== 'owner')

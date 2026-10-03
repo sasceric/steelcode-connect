@@ -31,8 +31,11 @@ use App\Entity\PropertyGroup;
 use App\Entity\Tag;
 use App\Entity\Tenant;
 use App\Entity\TenantMembership;
+use App\Http\PrivateMediaResponse;
 use App\Entity\User;
 use App\Service\SeoUrlService;
+use App\Service\PropertyValueReader;
+use App\Service\ProductVariantConfigurationReader;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\DBAL\LockMode;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
@@ -476,6 +479,8 @@ final class ProductController extends AbstractController
             ->select('variant')
             ->from(Product::class, 'variant')
             ->where('variant.parent = :product')
+            ->andWhere('variant.tenant = :tenant')
+            ->setParameter('tenant', $product->getTenant())
             ->setParameter('product', $product);
 
         if ($search !== '') {
@@ -518,6 +523,8 @@ final class ProductController extends AbstractController
             ->select('COUNT(variant.id)')
             ->from(Product::class, 'variant')
             ->where('variant.parent = :product')
+            ->andWhere('variant.tenant = :tenant')
+            ->setParameter('tenant', $product->getTenant())
             ->setParameter('product', $product);
 
         if ($search !== '') {
@@ -533,7 +540,7 @@ final class ProductController extends AbstractController
         $total = (int) $totalQuery->getQuery()->getSingleScalarResult();
 
         return $this->json([
-            'variants' => array_map($this->variantPayload(...), $variants),
+            'variants' => $this->variantPayloads($variants, $product),
             'pagination' => [
                 'page' => $page,
                 'limit' => $limit,
@@ -580,6 +587,8 @@ final class ProductController extends AbstractController
         foreach ($assignments as $assignment) {
             if (!isset($tags[$assignment->getTag()->getName()])) {
                 $entityManager->remove($assignment);
+            } else {
+                $assignment->claimSource('manual');
             }
         }
         $assigned = array_flip(array_map(static fn (ProductTag $assignment) => $assignment->getTag()->getName(), $assignments));
@@ -594,16 +603,24 @@ final class ProductController extends AbstractController
     }
 
     #[Route('/{id}/variant-options', methods: ['GET'])]
-    public function variantOptions(string $id, EntityManagerInterface $entityManager): JsonResponse
+    public function variantOptions(
+        string $id,
+        EntityManagerInterface $entityManager,
+        ProductVariantConfigurationReader $configuration,
+    ): JsonResponse
     {
         $product = $this->product($id, $entityManager);
-        $groups = $entityManager->getRepository(ProductVariantOptionGroup::class)->findBy(['product' => $product], ['position' => 'ASC']);
 
-        return $this->json(['optionGroups' => array_map(fn (ProductVariantOptionGroup $group) => $this->variantOptionGroupPayload($group, $entityManager), $groups)]);
+        return $this->json($configuration->read($product, $entityManager));
     }
 
     #[Route('/{id}/variant-options', methods: ['PUT'])]
-    public function updateVariantOptions(string $id, Request $request, EntityManagerInterface $entityManager, TranslatorInterface $translator): JsonResponse
+    public function updateVariantOptions(
+        string $id,
+        Request $request,
+        EntityManagerInterface $entityManager,
+        TranslatorInterface $translator,
+    ): JsonResponse
     {
         $product = $this->product($id, $entityManager, true);
         $data = $this->data($request, $translator);
@@ -612,39 +629,92 @@ final class ProductController extends AbstractController
         }
         $groups = $data['optionGroups'] ?? [];
         if (!is_array($groups)) {
-            return $this->json(['message' => $this->message($translator, 'product.option_group_invalid')], Response::HTTP_UNPROCESSABLE_ENTITY);
+            return $this->invalidVariantOptions($translator);
         }
-        foreach ($entityManager->getRepository(ProductVariantOptionGroup::class)->findBy(['product' => $product]) as $old) {
-            $entityManager->remove($old);
-        }
-        $entityManager->flush();
-        $payloadGroups = [];
-        foreach ($groups as $position => $groupData) {
-            if (!is_array($groupData) || !is_string($groupData['propertyGroupId'] ?? null) || !Uuid::isValid($groupData['propertyGroupId'])) {
-                return $this->json(['message' => $this->message($translator, 'product.option_group_invalid')], Response::HTTP_UNPROCESSABLE_ENTITY);
+        $validated = [];
+        foreach ($groups as $groupData) {
+            if (
+                !is_array($groupData)
+                || !is_string($groupData['propertyGroupId'] ?? null)
+                || !Uuid::isValid($groupData['propertyGroupId'])
+            ) {
+                return $this->invalidVariantOptions($translator);
             }
-            $propertyGroup = $entityManager->getRepository(PropertyGroup::class)->findOneBy(['id' => Uuid::fromString($groupData['propertyGroupId']), 'tenant' => $product->getTenant()]);
+            $propertyGroup = $entityManager->getRepository(PropertyGroup::class)->findOneBy([
+                'id' => Uuid::fromString($groupData['propertyGroupId']),
+                'tenant' => $product->getTenant(),
+            ]);
             $propertyIds = $groupData['propertyIds'] ?? [];
-            if (!$propertyGroup instanceof PropertyGroup || !is_array($propertyIds) || $propertyIds === []) {
-                return $this->json(['message' => $this->message($translator, 'product.option_group_invalid')], Response::HTTP_UNPROCESSABLE_ENTITY);
+            if (
+                !$propertyGroup instanceof PropertyGroup
+                || !is_array($propertyIds)
+                || $propertyIds === []
+                || isset($validated[$groupData['propertyGroupId']])
+            ) {
+                return $this->invalidVariantOptions($translator);
             }
-            $optionGroup = new ProductVariantOptionGroup($product->getTenant(), $product, $propertyGroup, $position);
-            $entityManager->persist($optionGroup);
+            $properties = [];
             foreach ($propertyIds as $propertyId) {
                 if (!is_string($propertyId) || !Uuid::isValid($propertyId)) {
-                    return $this->json(['message' => $this->message($translator, 'product.option_group_invalid')], Response::HTTP_UNPROCESSABLE_ENTITY);
+                    return $this->invalidVariantOptions($translator);
                 }
-                $property = $entityManager->getRepository(Property::class)->findOneBy(['id' => Uuid::fromString($propertyId), 'tenant' => $product->getTenant(), 'propertyGroup' => $propertyGroup]);
+                $property = $entityManager->getRepository(Property::class)->findOneBy([
+                    'id' => Uuid::fromString($propertyId),
+                    'tenant' => $product->getTenant(),
+                    'propertyGroup' => $propertyGroup,
+                ]);
                 if (!$property instanceof Property) {
-                    return $this->json(['message' => $this->message($translator, 'product.option_group_invalid')], Response::HTTP_UNPROCESSABLE_ENTITY);
+                    return $this->invalidVariantOptions($translator);
                 }
-                $entityManager->persist(new ProductVariantOptionGroupProperty($product->getTenant(), $optionGroup, $property));
+                $properties[$propertyId] = $property;
             }
-            $payloadGroups[] = $optionGroup;
+            $validated[$groupData['propertyGroupId']] = [$propertyGroup, array_values($properties)];
         }
-        $entityManager->flush();
 
-        return $this->json(['optionGroups' => array_map(fn (ProductVariantOptionGroup $group) => $this->variantOptionGroupPayload($group, $entityManager), $payloadGroups)]);
+        return $entityManager->wrapInTransaction(function () use (
+            $product,
+            $entityManager,
+            $validated,
+        ): JsonResponse {
+            $entityManager->lock($product, LockMode::PESSIMISTIC_WRITE);
+            foreach ($entityManager->getRepository(ProductVariantOptionGroup::class)->findBy([
+                'product' => $product,
+            ]) as $old) {
+                foreach ($entityManager->getRepository(ProductVariantOptionGroupProperty::class)->findBy([
+                    'optionGroup' => $old,
+                ]) as $oldValue) {
+                    $entityManager->remove($oldValue);
+                }
+                $entityManager->remove($old);
+            }
+            $entityManager->flush();
+            $payloadGroups = [];
+            foreach (array_values($validated) as $position => [$propertyGroup, $properties]) {
+                $optionGroup = new ProductVariantOptionGroup(
+                    $product->getTenant(),
+                    $product,
+                    $propertyGroup,
+                    $position,
+                );
+                $entityManager->persist($optionGroup);
+                foreach ($properties as $property) {
+                    $entityManager->persist(new ProductVariantOptionGroupProperty(
+                        $product->getTenant(),
+                        $optionGroup,
+                        $property,
+                    ));
+                }
+                $payloadGroups[] = $optionGroup;
+            }
+            $entityManager->flush();
+
+            return $this->json([
+                'optionGroups' => array_map(
+                    fn (ProductVariantOptionGroup $group): array => $this->variantOptionGroupPayload($group, $entityManager),
+                    $payloadGroups,
+                ),
+            ]);
+        });
     }
 
     #[Route('/{id}/option-groups', methods: ['GET'])]
@@ -740,12 +810,32 @@ final class ProductController extends AbstractController
     }
 
     #[Route('/{id}/properties', methods: ['GET'])]
-    public function productProperties(string $id, EntityManagerInterface $entityManager): JsonResponse
+    public function productProperties(
+        string $id,
+        EntityManagerInterface $entityManager,
+        PropertyValueReader $values,
+    ): JsonResponse
     {
         $product = $this->product($id, $entityManager);
-        $assignments = $entityManager->getRepository(ProductPropertyAssignment::class)->findBy(['product' => $product]);
+        $assignments = $entityManager->createQueryBuilder()
+            ->select('assignment', 'property')
+            ->from(ProductPropertyAssignment::class, 'assignment')
+            ->join('assignment.property', 'property')
+            ->where('assignment.product = :product')
+            ->andWhere('property.tenant = :tenant')
+            ->setParameter('product', $product)
+            ->setParameter('tenant', $product->getTenant())
+            ->getQuery()
+            ->getResult();
+        $properties = array_map(
+            static fn (ProductPropertyAssignment $assignment): Property => $assignment->getProperty(),
+            $assignments,
+        );
 
-        return $this->json(['propertyIds' => array_map(static fn (ProductPropertyAssignment $assignment) => $assignment->getProperty()->getId()->toRfc4122(), $assignments)]);
+        return $this->json([
+            'propertyIds' => array_map(static fn (Property $property): string => $property->getId()->toRfc4122(), $properties),
+            'properties' => $values->payloads($properties, $entityManager),
+        ]);
     }
 
     #[Route('/{id}/categories', methods: ['GET'])]
@@ -771,7 +861,8 @@ final class ProductController extends AbstractController
         Request $request,
         EntityManagerInterface $entityManager,
         TranslatorInterface $translator,
-    ): JsonResponse {
+    ): JsonResponse
+    {
         $product = $this->product($id, $entityManager, true);
         $data = $this->data($request, $translator);
         if ($data instanceof JsonResponse) {
@@ -807,6 +898,8 @@ final class ProductController extends AbstractController
         foreach ($existingByCategoryId as $categoryId => $assignment) {
             if (!in_array($categoryId, $categoryIds, true)) {
                 $entityManager->remove($assignment);
+            } else {
+                $assignment->claimSource('manual');
             }
         }
         foreach ($categories as $position => $category) {
@@ -852,6 +945,8 @@ final class ProductController extends AbstractController
         foreach ($existingByPropertyId as $propertyId => $assignment) {
             if (!in_array($propertyId, $requestedPropertyIds, true)) {
                 $entityManager->remove($assignment);
+            } else {
+                $assignment->claimSource('manual');
             }
         }
         foreach ($properties as $property) {
@@ -1029,6 +1124,7 @@ final class ProductController extends AbstractController
 
             if ($existingItem instanceof ProductMedia && $duplicateAction === 'replace') {
                 $existingItem->replaceMedia($media);
+                $existingItem->claimSource('manual');
                 $item = $existingItem;
             } else {
                 $usedNames[mb_strtolower($displayName)] = true;
@@ -1048,7 +1144,12 @@ final class ProductController extends AbstractController
     }
 
     #[Route('/{id}/media/{mediaId}/file', methods: ['GET'])]
-    public function mediaFile(string $id, string $mediaId, EntityManagerInterface $entityManager): BinaryFileResponse
+    public function mediaFile(
+        string $id,
+        string $mediaId,
+        EntityManagerInterface $entityManager,
+        \App\Service\TenantMediaStorage $storage,
+    ): BinaryFileResponse
     {
         $product = $this->product($id, $entityManager);
         if (!Uuid::isValid($mediaId)) {
@@ -1058,12 +1159,13 @@ final class ProductController extends AbstractController
         if (!$item instanceof ProductMedia) {
             throw $this->createNotFoundException();
         }
-        $path = $this->mediaPath($item);
-        if (!is_file($path)) {
-            throw $this->createNotFoundException();
+        try {
+            $path = $storage->path($item->getMedia(), $product->getTenant());
+        } catch (\DomainException $exception) {
+            throw $this->createNotFoundException('The media file is not available.', $exception);
         }
 
-        return new BinaryFileResponse($path);
+        return PrivateMediaResponse::inline($path, $item->getMedia());
     }
 
     #[Route('/{id}/media/order', methods: ['PUT'])]
@@ -1097,6 +1199,7 @@ final class ProductController extends AbstractController
         $entityManager->flush();
         foreach ($ids as $index => $mediaId) {
             $byId[$mediaId]->setSortOrder($index);
+            $byId[$mediaId]->claimSource('manual');
         }
         $entityManager->flush();
 
@@ -1318,16 +1421,46 @@ final class ProductController extends AbstractController
     }
 
     #[Route('/{id}/variants/generate', methods: ['POST'])]
-    public function generateVariants(string $id, EntityManagerInterface $entityManager, TranslatorInterface $translator): JsonResponse
+    public function generateVariants(
+        string $id,
+        EntityManagerInterface $entityManager,
+        TranslatorInterface $translator,
+        ProductVariantConfigurationReader $configuration,
+    ): JsonResponse
     {
         $product = $this->product($id, $entityManager, true);
-        $groups = $entityManager->getRepository(ProductVariantOptionGroup::class)->findBy(['product' => $product], ['position' => 'ASC']);
+        return $entityManager->wrapInTransaction(function () use (
+            $product,
+            $entityManager,
+            $translator,
+            $configuration,
+        ): JsonResponse {
+            // Serialize generation for this parent before reading existing combinations.
+            $entityManager->lock($product, LockMode::PESSIMISTIC_WRITE);
+            return $this->generateMissingVariants($product, $entityManager, $translator, $configuration);
+        });
+    }
+
+    private function generateMissingVariants(
+        Product $product,
+        EntityManagerInterface $entityManager,
+        TranslatorInterface $translator,
+        ProductVariantConfigurationReader $configuration,
+    ): JsonResponse
+    {
+        $groups = $entityManager->getRepository(ProductVariantOptionGroup::class)->findBy(
+            ['product' => $product],
+            ['position' => 'ASC'],
+        );
         $sets = [];
         $propertiesById = [];
+        $combinationCount = 1;
         foreach ($groups as $group) {
-            $values = $entityManager->getRepository(ProductVariantOptionGroupProperty::class)->findBy(['optionGroup' => $group]);
+            $values = $entityManager->getRepository(ProductVariantOptionGroupProperty::class)->findBy([
+                'optionGroup' => $group,
+            ]);
             if ($values === []) {
-                return $this->json(['message' => $this->message($translator, 'product.option_group_invalid')], Response::HTTP_UNPROCESSABLE_ENTITY);
+                return $this->invalidVariantOptions($translator);
             }
             $propertyIds = [];
             foreach ($values as $value) {
@@ -1335,16 +1468,20 @@ final class ProductController extends AbstractController
                 $propertiesById[$property->getId()->toRfc4122()] = $property;
                 $propertyIds[] = $property->getId()->toRfc4122();
             }
-            $sets[] = [$group->getPropertyGroup()->getName(), $propertyIds];
+            $propertyIds = array_values(array_unique($propertyIds));
+            $combinationCount *= count($propertyIds);
+            if ($combinationCount > 200) {
+                return $this->json([
+                    'message' => $this->message($translator, 'product.too_many_variants'),
+                ], Response::HTTP_UNPROCESSABLE_ENTITY);
+            }
+            $sets[] = [(string) $group->getPropertyGroup()->getId(), $propertyIds];
         }
         if ($sets === []) {
-            return $this->json(['message' => $this->message($translator, 'product.option_group_invalid')], Response::HTTP_UNPROCESSABLE_ENTITY);
+            return $this->invalidVariantOptions($translator);
         }
 
         $combinations = $this->combinations($sets);
-        if (count($combinations) > 200) {
-            return $this->json(['message' => $this->message($translator, 'product.too_many_variants')], Response::HTTP_UNPROCESSABLE_ENTITY);
-        }
         $desired = [];
         foreach ($combinations as $options) {
             $ids = array_values($options);
@@ -1352,38 +1489,54 @@ final class ProductController extends AbstractController
             $desired[implode(':', $ids)] = $options;
         }
         $existing = [];
-        foreach ($entityManager->getRepository(Product::class)->findBy(['parent' => $product]) as $variant) {
-            $ids = array_map(static fn (ProductVariantOptionValue $value) => $value->getProperty()->getId()->toRfc4122(), $entityManager->getRepository(ProductVariantOptionValue::class)->findBy(['product' => $variant]));
-            sort($ids);
-            $existing[implode(':', $ids)] = $variant;
-        }
-        foreach ($existing as $key => $variant) {
-            if (!isset($desired[$key])) {
-                $this->seoUrls->removeForEntity(
-                    $variant->getTenant(),
-                    SeoUrlService::ENTITY_PRODUCT,
-                    $variant->getId(),
-                );
-                $entityManager->remove($variant);
+        $wildcards = [];
+        foreach ($configuration->read($product, $entityManager)['existingCombinations'] as $variant) {
+            if ($variant['wildcardGroupIds'] !== []) {
+                $wildcards[] = $variant;
+            }
+            if ($variant['propertyIds'] !== []) {
+                $existing[implode(':', $variant['propertyIds'])] = true;
             }
         }
-        $entityManager->flush();
+        $created = 0;
+        $skipped = 0;
+        $sequence = 0;
         foreach ($desired as $key => $options) {
-            if (isset($existing[$key])) {
-                $existing[$key]->inheritCatalogDataFrom($product);
-                $this->copyMedia($product, $existing[$key], $entityManager);
+            $covered = false;
+            foreach ($wildcards as $variant) {
+                if (count($options) !== count($variant['propertyIds']) + count($variant['wildcardGroupIds'])) {
+                    continue;
+                }
+                $covered = true;
+                foreach ($options as $groupId => $propertyId) {
+                    if (!in_array($groupId, $variant['wildcardGroupIds'], true) && !in_array($propertyId, $variant['propertyIds'], true)) {
+                        $covered = false;
+                        break;
+                    }
+                }
+                if ($covered) {
+                    break;
+                }
+            }
+            if (isset($existing[$key]) || $covered) {
+                $skipped++;
                 continue;
             }
-            $sequence = array_search($key, array_keys($desired), true) + 1;
-            $sku = ($product->getSku() ?? 'product').'.'.$sequence;
+            do {
+                $sequence++;
+                $sku = ($product->getSku() ?? 'product').'.'.$sequence;
+            } while ($entityManager->getRepository(Product::class)->findOneBy([
+                'tenant' => $product->getTenant(),
+                'sku' => $sku,
+            ]) instanceof Product);
             $labels = [];
-            foreach ($options as $groupName => $propertyId) {
-                $labels[$groupName] = $propertiesById[$propertyId]->getName();
+            foreach ($options as $propertyId) {
+                $labels[] = $propertiesById[$propertyId]->getName();
             }
             $parentTranslation = $this->defaultTranslation($product);
             $variant = new Product($product->getTenant());
             $variant->inheritCatalogDataFrom($product);
-            $variant->makeChildOf($product, $sku, null, $labels);
+            $variant->makeChildOf($product, $sku, null, $options);
             $entityManager->persist($variant);
             $entityManager->persist($this->newDefaultTranslation(
                 $variant,
@@ -1391,12 +1544,28 @@ final class ProductController extends AbstractController
             ));
             $this->copyMedia($product, $variant, $entityManager);
             foreach ($options as $propertyId) {
-                $entityManager->persist(new ProductVariantOptionValue($product->getTenant(), $variant, $propertiesById[$propertyId]));
+                $entityManager->persist(new ProductVariantOptionValue(
+                    $product->getTenant(),
+                    $variant,
+                    $propertiesById[$propertyId],
+                ));
             }
+            $created++;
         }
         $entityManager->flush();
 
-        return $this->json(['message' => $this->message($translator, 'product.variants_generated'), 'variants' => array_map($this->variantPayload(...), $entityManager->getRepository(Product::class)->findBy(['parent' => $product], ['createdAt' => 'ASC']))]);
+        return $this->json([
+            'message' => $this->message($translator, 'product.variants_generated'),
+            'created' => $created,
+            'skipped' => $skipped,
+        ]);
+    }
+
+    private function invalidVariantOptions(TranslatorInterface $translator): JsonResponse
+    {
+        return $this->json([
+            'message' => $this->message($translator, 'product.option_group_invalid'),
+        ], Response::HTTP_UNPROCESSABLE_ENTITY);
     }
 
     #[Route('/{id}/variants', methods: ['DELETE'])]
@@ -1451,7 +1620,7 @@ final class ProductController extends AbstractController
         if (!$user instanceof User) {
             throw $this->createAccessDeniedException();
         }
-        $membership = $entityManager->getRepository(TenantMembership::class)->findOneBy(['user' => $user]);
+        $membership = $entityManager->getRepository(TenantMembership::class)->forUser($user);
         if (!$membership instanceof TenantMembership || ($ownerRequired && $membership->getRole() !== 'owner')) {
             throw $this->createAccessDeniedException();
         }
@@ -1695,13 +1864,16 @@ return null;
             'SELECT productMedia
             FROM App\\Entity\\ProductMedia productMedia
             WHERE productMedia.product IN (:products)
+            AND productMedia.tenant = :tenant
             AND productMedia.sortOrder = (
                 SELECT MIN(candidate.sortOrder)
                 FROM App\\Entity\\ProductMedia candidate
                 WHERE candidate.product = productMedia.product
+                AND candidate.tenant = :tenant
             )',
         )
             ->setParameter('products', $products)
+            ->setParameter('tenant', $products[0]->getTenant())
             ->getResult();
 
         $covers = [];
@@ -1835,7 +2007,10 @@ return null;
         }
 
         $stockByProductId = [];
-        foreach ($this->entityManager->getRepository(InventoryLevel::class)->findBy(['product' => $products]) as $level) {
+        foreach ($this->entityManager->getRepository(InventoryLevel::class)->findBy([
+            'tenant' => $products[0]->getTenant(),
+            'product' => $products,
+        ]) as $level) {
             $productId = $level->getProduct()->getId()->toRfc4122();
             $stockByProductId[$productId] = ($stockByProductId[$productId] ?? 0) + (float) $level->getAvailableQuantity();
         }
@@ -1959,6 +2134,7 @@ return null;
             'sku' => $product->getSku(),
             'ean' => $product->getEan(),
             'optionValues' => $product->getOptionValues(),
+            'attributeConfiguration' => $product->getAttributeConfiguration(),
             'productType' => $product->getProductType(),
             'manufacturerNumber' => $product->getManufacturerNumber(),
             'shippingClass' => $product->getShippingClass(),
@@ -2014,11 +2190,35 @@ return null;
 
         return $translation instanceof ManufacturerTranslation ? $translation->getName() : null;
     }
-    private function variantPayload(Product $variant): array
+    /** @param list<Product> $variants */
+    private function variantPayloads(array $variants, Product $parent): array
     {
-        $price = $this->legacyRegularPrice($variant);
+        // Only the requested page is enriched, in two batched queries.
+        $covers = $this->coverMediaByProductId([$parent, ...$variants]);
+        $stock = $this->stockByProductId($variants);
+        $parentCover = $covers[$parent->getId()->toRfc4122()] ?? null;
 
-        return ['id' => $variant->getId()->toRfc4122(), 'sku' => $variant->getSku(), 'ean' => $variant->getEan(), 'name' => $this->defaultTranslation($variant)?->getName() ?? '', 'price' => $price['grossAmount'], 'currency' => $price['currency'], 'optionValues' => $variant->getOptionValues(), 'status' => $variant->getStatus()];
+        return array_map(function (Product $variant) use ($covers, $stock, $parentCover): array {
+            $id = $variant->getId()->toRfc4122();
+            $cover = $covers[$id] ?? $parentCover;
+            $price = $this->legacyRegularPrice($variant);
+
+            return [
+                'id' => $id,
+                'sku' => $variant->getSku(),
+                'ean' => $variant->getEan(),
+                'name' => $this->defaultTranslation($variant)?->getName() ?? '',
+                'price' => $price['grossAmount'],
+                'currency' => $price['currency'],
+                'coverUrl' => $cover instanceof ProductMedia
+                    ? '/api/v1/products/'.$cover->getProduct()->getId()->toRfc4122()
+                        .'/media/'.$cover->getId()->toRfc4122().'/file'
+                    : null,
+                'stock' => $stock[$id] ?? 0,
+                'optionValues' => $variant->getOptionValues(),
+                'status' => $variant->getStatus(),
+            ];
+        }, $variants);
     }
     private function optionGroupPayload(ProductOptionGroup $group, EntityManagerInterface $entityManager): array
     {
@@ -2053,15 +2253,6 @@ return null;
     private function mediaPayload(ProductMedia $item): array
     {
         return ['id' => $item->getId()->toRfc4122(), 'type' => $item->getMediaType(), 'url' => '/api/v1/products/'.$item->getProduct()->getId()->toRfc4122().'/media/'.$item->getId()->toRfc4122().'/file', 'fileName' => $item->getFileName(), 'fileExtension' => $item->getFileExtension(), 'fileSize' => $item->getFileSize(), 'mimeType' => $item->getMimeType(), 'altText' => $item->getAltText(), 'position' => $item->getSortOrder(), 'createdAt' => $item->getCreatedAt()->format(DATE_ATOM)];
-    }
-    private function mediaPath(ProductMedia $item): string
-    {
-        $storageKey = $item->getMedia()->getStorageKey();
-        $projectDirectory = $this->getParameter('kernel.project_dir');
-
-        return str_starts_with($storageKey, 'product-media/')
-            ? $projectDirectory.'/var/'.$storageKey
-            : $projectDirectory.'/var/media/'.$storageKey;
     }
     private function copyMedia(Product $parent, Product $variant, EntityManagerInterface $entityManager): void
     {
@@ -2139,7 +2330,8 @@ return mb_substr($name, 0, 255);
     {
         if ($offset === count($sets)) {
             return [$current];
-        } [$name, $values] = $sets[$offset];
+        }
+        [$name, $values] = $sets[$offset];
         $result = [];
         foreach ($values as $value) {
             foreach ($this->combinations($sets, $offset + 1, [...$current, $name => $value]) as $combination) {
@@ -2147,6 +2339,6 @@ return mb_substr($name, 0, 255);
             }
         }
 
-return $result;
+        return $result;
     }
 }

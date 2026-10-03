@@ -26,9 +26,10 @@ type CustomFieldSet = {
 type Locale = { code: string, label: string }
 
 const route = useRoute()
+const routeBaseName = useRouteBaseName()
 const { t } = useI18n()
 const customFieldsPath = computed(() =>
-  route.path.startsWith('/shop/')
+  String(routeBaseName(route) || '').startsWith('shop-')
     ? '/shop/custom-fields'
     : '/catalogue/custom-fields'
 )
@@ -116,7 +117,8 @@ const typeItems = computed(() =>
     'entity',
     'media',
     'color',
-    'price'
+    'price',
+    'json'
   ].map(value => ({ value, label: t(`customFieldTypes.${value}`) }))
 )
 const entityItems = computed(() =>
@@ -126,7 +128,7 @@ const entityItems = computed(() =>
   }))
 )
 const relationItems = computed(() =>
-  ['product', 'category', 'manufacturer', 'property_group', 'property', 'media'].map(
+  ['product', 'category', 'manufacturer', 'customer', 'order', 'property_group', 'property', 'media'].map(
     value => ({
       value,
       label: t(`customFieldsExtra.relations.${value}`)

@@ -25,6 +25,8 @@ final class ShopwareMediaImporter
         'image/gif' => 'gif',
         'image/avif' => 'avif',
         'application/pdf' => 'pdf',
+        'application/zip' => 'zip',
+        'text/plain' => 'txt',
     ];
 
     public function __construct(
@@ -128,13 +130,62 @@ final class ShopwareMediaImporter
         $this->entityManager->clear();
     }
 
+    /** Reuse the existing tenant-owned storage and source-media mappings. */
+    public function importConnectorImage(
+        IntegrationConnection $connection,
+        string $externalId,
+        string $url,
+        ?string $fileName,
+        ?string $unchangedLegacyId = null,
+    ): ?Media {
+        if ($unchangedLegacyId !== null) {
+            $mapping = $this->entityManager->getRepository(IntegrationEntityMapping::class)->findOneBy([
+                'tenant' => $connection->getTenant(),
+                'connection' => $connection,
+                'entityType' => 'media',
+                'externalId' => $unchangedLegacyId,
+            ]);
+            $media = $mapping instanceof IntegrationEntityMapping
+                ? $this->entityManager->getRepository(Media::class)->findOneBy(['id' => $mapping->getLocalId(), 'tenant' => $connection->getTenant()])
+                : null;
+            if ($media instanceof Media && str_starts_with($media->getMimeType() ?? '', 'image/')) {
+                $this->ensureMapping($connection->getTenant(), $connection, 'media', $externalId, $media);
+
+                return $media;
+            }
+        }
+        return $this->upsertMedia(
+            ['id' => $externalId, 'attributes' => ['url' => $url, 'fileName' => $fileName]],
+            $connection,
+            $connection->getTenant(),
+            (string) ($connection->getConfiguration()['baseUrl'] ?? ''),
+            true,
+        );
+    }
+
+    public function importConnectorFile(
+        IntegrationConnection $connection,
+        string $externalId,
+        string $url,
+        ?string $fileName,
+    ): ?Media
+    {
+        return $this->upsertMedia(
+            ['id' => $externalId, 'attributes' => ['url' => $url, 'fileName' => $fileName]],
+            $connection,
+            $connection->getTenant(),
+            (string) ($connection->getConfiguration()['baseUrl'] ?? ''),
+        );
+    }
+
     /** @param array<string, mixed> $source */
     private function upsertMedia(
         array $source,
         IntegrationConnection $connection,
         Tenant $tenant,
         string $baseUrl,
-    ): void {
+        bool $imageOnly = false,
+    ): ?Media {
         $attributes = $this->attributes($source);
         $externalId = $this->sourceId($source);
         if ($externalId === null) {
@@ -147,12 +198,13 @@ final class ShopwareMediaImporter
             && $declaredMimeType !== ''
             && !isset(self::ALLOWED_MIME_TYPES[strtolower($declaredMimeType)])
         ) {
-            return;
+            return null;
         }
 
         $mapping = $this->entityManager
             ->getRepository(IntegrationEntityMapping::class)
             ->findOneBy([
+                'tenant' => $tenant,
                 'connection' => $connection,
                 'entityType' => 'media',
                 'externalId' => $externalId,
@@ -162,8 +214,8 @@ final class ShopwareMediaImporter
                 'id' => $mapping->getLocalId(),
                 'tenant' => $tenant,
             ]);
-            if ($media instanceof Media) {
-                return;
+            if ($media instanceof Media && (!$imageOnly || str_starts_with($media->getMimeType() ?? '', 'image/'))) {
+                return $media;
             }
         }
 
@@ -174,6 +226,7 @@ final class ShopwareMediaImporter
 
         $response = $this->httpClient->request('GET', $url, [
             'timeout' => 30,
+            'max_duration' => 60,
             'max_redirects' => 0,
         ]);
         $statusCode = $response->getStatusCode();
@@ -184,15 +237,36 @@ final class ShopwareMediaImporter
             ));
         }
 
-        $content = $response->getContent(false);
-        if ($content === '' || strlen($content) > 10 * 1024 * 1024) {
+        $content = '';
+        foreach ($this->httpClient->stream($response) as $chunk) {
+            if ($chunk->isTimeout()) {
+                throw new \RuntimeException('The connector media download timed out.');
+            }
+            $content .= $chunk->getContent();
+            if (strlen($content) > 10 * 1024 * 1024) {
+                $response->cancel();
+                throw new \RuntimeException('The connector media exceeds 10 MB.');
+            }
+        }
+        if ($content === '') {
             throw new \RuntimeException('The Shopware image is empty or exceeds 10 MB.');
         }
 
         $mimeType = (new \finfo(FILEINFO_MIME_TYPE))->buffer($content);
         $extension = self::ALLOWED_MIME_TYPES[$mimeType] ?? null;
-        if ($extension === null) {
+        if ($extension === null || ($imageOnly && !str_starts_with($mimeType, 'image/'))) {
             throw new \RuntimeException('The Shopware media item is not a supported image.');
+        }
+
+        $checksum = hash('sha256', $content);
+        $existing = $this->entityManager->getRepository(Media::class)->findOneBy([
+            'tenant' => $tenant,
+            'checksum' => $checksum,
+        ]);
+        if ($existing instanceof Media) {
+            $this->ensureMapping($tenant, $connection, 'media', $externalId, $existing);
+
+            return $existing;
         }
 
         $fileName = $this->fileName(
@@ -217,7 +291,7 @@ final class ShopwareMediaImporter
             $extension,
             strlen($content),
             $mimeType,
-            hash('sha256', $content),
+            $checksum,
         );
         $this->entityManager->persist($media);
         $this->ensureMapping(
@@ -227,6 +301,8 @@ final class ShopwareMediaImporter
             $externalId,
             $media,
         );
+
+        return $media;
     }
 
     /** @return array{IntegrationConnection, Tenant} */
@@ -368,6 +444,10 @@ final class ShopwareMediaImporter
             !is_string($host)
             || !is_string($baseHost)
             || strcasecmp($host, $baseHost) !== 0
+            || $scheme !== parse_url($baseUrl, PHP_URL_SCHEME)
+            || parse_url($url, PHP_URL_USER) !== null
+            || parse_url($url, PHP_URL_PASS) !== null
+            || (parse_url($url, PHP_URL_PORT) ?? ($scheme === 'https' ? 443 : 80)) !== (parse_url($baseUrl, PHP_URL_PORT) ?? (parse_url($baseUrl, PHP_URL_SCHEME) === 'https' ? 443 : 80))
         ) {
             return null;
         }
@@ -399,6 +479,7 @@ final class ShopwareMediaImporter
         $mapping = $this->entityManager
             ->getRepository(IntegrationEntityMapping::class)
             ->findOneBy([
+                'tenant' => $tenant,
                 'connection' => $connection,
                 'entityType' => $type,
                 'externalId' => $externalId,

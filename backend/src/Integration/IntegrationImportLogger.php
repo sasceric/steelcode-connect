@@ -51,8 +51,12 @@ final class IntegrationImportLogger
         string $message,
         array $context,
     ): void {
+        if (!$run->getTenant()->getId()->equals($run->getConnection()->getTenant()->getId())) {
+            throw new \DomainException('The integration log has inconsistent tenant ownership.');
+        }
+        $tenantId = $run->getTenant()->getId()->toRfc4122();
         $connector = $this->connectorKey($run->getConnection()->getConnectorKey());
-        $directory = rtrim($this->logsDirectory, '/').'/integrations';
+        $directory = rtrim($this->logsDirectory, '/').'/integrations/'.$tenantId;
         if (!is_dir($directory) && !mkdir($directory, 0755, true) && !is_dir($directory)) {
             throw new \RuntimeException('The integration log directory could not be created.');
         }
@@ -62,6 +66,7 @@ final class IntegrationImportLogger
                 ->format(DATE_ATOM),
             'level' => $level,
             'connector' => $run->getConnection()->getConnectorKey(),
+            'tenantId' => $tenantId,
             'connectionId' => $run->getConnection()->getId()->toRfc4122(),
             'runId' => $run->getId()->toRfc4122(),
             'stage' => $stage,

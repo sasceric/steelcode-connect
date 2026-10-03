@@ -28,6 +28,7 @@ type Policy = {
 type ProductOption = { id: string, name: string, sku: string | null, variantCombination?: string | null }
 type WarehouseOption = { id: string, name: string, active: boolean }
 
+const localePath = useLocalePath()
 const { t } = useI18n()
 const notify = useAppToast()
 const UButton = resolveComponent('UButton')
@@ -206,7 +207,7 @@ const createDrafts = async () => {
     selection.value = {}
     await refresh()
     notify.success(t('common.changesSaved'), t('replenishment.draftsCreated', { count: response.orders.length }))
-    await navigateTo('/inventory/purchase-orders')
+    await navigateTo(localePath('/inventory/purchase-orders'))
   } catch (error: unknown) {
     notify.error(t('common.tryAgain'), error instanceof Error ? error.message : t('common.tryAgain'))
   } finally {

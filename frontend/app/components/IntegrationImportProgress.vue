@@ -11,6 +11,7 @@ type ImportRun = {
   processedItems: number
 }
 
+const localePath = useLocalePath()
 const { t } = useI18n()
 const runs = ref<ImportRun[]>([])
 let pollingTimer: ReturnType<typeof setInterval> | null = null
@@ -85,7 +86,7 @@ onBeforeUnmount(() => {
           class="flex items-start gap-2 rounded-md"
         >
           <NuxtLink
-            :to="`/integrations/${run.connectionId}`"
+            :to="localePath(`/integrations/${run.connectionId}`)"
             class="min-w-0 flex-1 rounded-md outline-none transition-colors hover:bg-elevated focus-visible:ring-2 focus-visible:ring-primary"
           >
             <div class="flex items-center justify-between gap-3 text-sm">

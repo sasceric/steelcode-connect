@@ -3,6 +3,7 @@ defineProps<{
   collapsed?: boolean
 }>()
 
+const localePath = useLocalePath()
 const colorMode = useColorMode()
 
 const logoSrc = computed(() => {
@@ -12,7 +13,7 @@ const logoSrc = computed(() => {
 
 <template>
   <NuxtLink
-    to="/"
+    :to="localePath('/')"
     aria-label="SteelCode Connect home"
     class="flex h-10 items-center rounded-md px-2 hover:bg-elevated"
   >

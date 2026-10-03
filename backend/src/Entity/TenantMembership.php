@@ -2,10 +2,11 @@
 
 namespace App\Entity;
 
+use App\Repository\TenantMembershipRepository;
 use Doctrine\ORM\Mapping as ORM;
 use Symfony\Component\Uid\Uuid;
 
-#[ORM\Entity]
+#[ORM\Entity(repositoryClass: TenantMembershipRepository::class)]
 #[ORM\Table(name: 'tenant_memberships')]
 #[ORM\UniqueConstraint(name: 'uniq_membership_tenant_user', columns: ['tenant_id', 'user_id'])]
 class TenantMembership

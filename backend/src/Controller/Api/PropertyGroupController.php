@@ -14,6 +14,7 @@ use App\Entity\PropertyTranslation;
 use App\Entity\Tenant;
 use App\Entity\TenantMembership;
 use App\Entity\User;
+use App\Service\PropertyValueReader;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -274,6 +275,63 @@ final class PropertyGroupController extends AbstractController
         return new JsonResponse(null, Response::HTTP_NO_CONTENT);
     }
 
+    #[Route('/{id}/properties', methods: ['GET'])]
+    public function values(
+        string $id,
+        Request $request,
+        EntityManagerInterface $entityManager,
+        PropertyValueReader $values,
+    ): JsonResponse
+    {
+        $group = $this->group($id, $entityManager);
+        $page = max(1, $request->query->getInt('page', 1));
+        $limit = min(100, max(1, $request->query->getInt('limit', 25)));
+        $search = mb_strtolower(trim((string) $request->query->get('search', '')));
+        $locale = $entityManager->getRepository(Locale::class)->findOneBy([
+            'code' => (string) $request->query->get('locale', $group->getTenant()->getDefaultSnippetLocale()),
+            'active' => true,
+        ]);
+        $query = $entityManager->createQueryBuilder()
+            ->select('property')
+            ->from(Property::class, 'property')
+            ->where('property.propertyGroup = :group')
+            ->andWhere('property.tenant = :tenant')
+            ->setParameter('group', $group)
+            ->setParameter('tenant', $group->getTenant())
+            ->leftJoin(
+                PropertyTranslation::class,
+                'translation',
+                'WITH',
+                'translation.property = property AND translation.locale = :locale',
+            )
+            ->setParameter('locale', $locale);
+        if ($search !== '') {
+            $query
+                ->andWhere('LOWER(COALESCE(translation.name, property.name)) LIKE :search OR LOWER(property.code) LIKE :search')
+                ->setParameter('search', '%'.$search.'%');
+        }
+        $count = clone $query;
+        $total = (int) $count->select('COUNT(property.id)')->getQuery()->getSingleScalarResult();
+        $records = $query
+            ->addSelect('COALESCE(translation.name, property.name) AS HIDDEN localizedName')
+            ->orderBy($group->getSorting() === 'alphanumeric' ? 'localizedName' : 'property.position', 'ASC')
+            ->addOrderBy('property.id', 'ASC')
+            ->setFirstResult(($page - 1) * $limit)
+            ->setMaxResults($limit)
+            ->getQuery()
+            ->getResult();
+
+        return $this->json([
+            'properties' => $values->payloads($records, $entityManager),
+            'pagination' => [
+                'page' => $page,
+                'limit' => $limit,
+                'total' => $total,
+                'hasMore' => $page * $limit < $total,
+            ],
+        ]);
+    }
+
     #[Route('/{id}/properties', methods: ['POST'])]
     public function createProperty(string $id, Request $request, EntityManagerInterface $entityManager, TranslatorInterface $translator): JsonResponse
     {
@@ -395,7 +453,7 @@ return $group;
         $user = $this->getUser();
         if (!$user instanceof User) {
             throw $this->createAccessDeniedException();
-        } $membership = $entityManager->getRepository(TenantMembership::class)->findOneBy(['user' => $user]);
+        } $membership = $entityManager->getRepository(TenantMembership::class)->forUser($user);
         if (!$membership instanceof TenantMembership || ($ownerRequired && $membership->getRole() !== 'owner')) {
             throw $this->createAccessDeniedException();
         }

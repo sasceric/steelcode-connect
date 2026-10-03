@@ -1,4 +1,5 @@
 <script setup lang="ts">
+const localePath = useLocalePath()
 const hasToolbarTarget = ref(false)
 
 defineProps<{
@@ -28,7 +29,7 @@ onMounted(() => {
           color="neutral"
           variant="ghost"
           :aria-label="backLabel || 'Back'"
-          @click="navigateTo(backTo)"
+          @click="navigateTo(localePath(backTo))"
         />
         <div class="min-w-0">
           <h1 class="truncate text-base font-semibold text-highlighted">

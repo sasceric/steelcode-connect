@@ -77,10 +77,10 @@ final class AuthController extends AbstractController
     public function login(EntityManagerInterface $entityManager): JsonResponse
     {
         $user = $this->authenticatedUser();
-        $membership = $entityManager->getRepository(TenantMembership::class)->findOneBy(['user' => $user]);
+        $membership = $entityManager->getRepository(TenantMembership::class)->forUser($user);
 
         if (!$membership instanceof TenantMembership) {
-            return $this->json(['message' => 'No tenant membership was found.'], Response::HTTP_FORBIDDEN);
+            return $this->json(['message' => 'No unambiguous company membership was found.'], Response::HTTP_FORBIDDEN);
         }
 
         $tenant = $membership->getTenant();
@@ -108,10 +108,10 @@ final class AuthController extends AbstractController
     public function me(EntityManagerInterface $entityManager): JsonResponse
     {
         $user = $this->authenticatedUser();
-        $membership = $entityManager->getRepository(TenantMembership::class)->findOneBy(['user' => $user]);
+        $membership = $entityManager->getRepository(TenantMembership::class)->forUser($user);
 
         if (!$membership instanceof TenantMembership) {
-            return $this->json(['message' => 'No tenant membership was found.'], Response::HTTP_FORBIDDEN);
+            return $this->json(['message' => 'No unambiguous company membership was found.'], Response::HTTP_FORBIDDEN);
         }
 
         $tenant = $membership->getTenant();

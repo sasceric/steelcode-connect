@@ -11,6 +11,7 @@ type Manufacturer = {
   translations: Record<string, { name: string, seoUrl: string | null }>
 }
 
+const localePath = useLocalePath()
 const { t } = useI18n()
 const auth = useAuth()
 const toast = useAppToast()
@@ -93,7 +94,7 @@ const getActions = (row: Row<Manufacturer>) => [
     {
       label: t('products.open'),
       icon: 'i-lucide-arrow-up-right',
-      onSelect: () => navigateTo(`/catalogue/manufacturers/${row.original.id}`)
+      onSelect: () => navigateTo(localePath(`/catalogue/manufacturers/${row.original.id}`))
     }
   ],
   [
@@ -125,7 +126,7 @@ const columns: TableColumn<Manufacturer>[] = [
             'button',
             {
               class: 'cursor-pointer truncate text-left font-medium text-highlighted hover:text-primary',
-              onClick: () => navigateTo(`/catalogue/manufacturers/${row.original.id}`)
+              onClick: () => navigateTo(localePath(`/catalogue/manufacturers/${row.original.id}`))
             },
             row.original.name
           )
@@ -191,7 +192,7 @@ const create = async () => {
     })
     open.value = false
     name.value = ''
-    await navigateTo(`/catalogue/manufacturers/${manufacturer.id}`)
+    await navigateTo(localePath(`/catalogue/manufacturers/${manufacturer.id}`))
   } catch (error: unknown) {
     validation.notifyApiError(error, toast, t('manufacturers.createFailed'), t('common.tryAgain'))
   } finally {

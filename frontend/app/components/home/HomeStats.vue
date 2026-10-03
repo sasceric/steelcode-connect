@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { Period, Range, Stat } from '~/types'
 
+const localePath = useLocalePath()
 const props = defineProps<{
   period: Period
   range: Range
@@ -79,7 +80,7 @@ const { data: stats } = await useAsyncData<Stat[]>(
       :key="index"
       :icon="stat.icon"
       :title="stat.title"
-      to="/customers"
+      :to="localePath('/customers')"
       variant="subtle"
       :ui="{
         container: 'gap-y-1.5',

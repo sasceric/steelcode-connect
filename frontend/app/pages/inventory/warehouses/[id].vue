@@ -23,6 +23,7 @@ type WarehouseStockResponse = {
   pagination: { total: number }
 }
 
+const localePath = useLocalePath()
 const route = useRoute()
 const { t } = useI18n()
 const search = ref('')
@@ -76,7 +77,7 @@ const columns: TableColumn<WarehouseStockItem>[] = [
         'button',
         {
           class: 'cursor-pointer font-medium text-highlighted hover:text-primary',
-          onClick: () => navigateTo(`/catalogue/products/${row.original.productId}`)
+          onClick: () => navigateTo(localePath(`/catalogue/products/${row.original.productId}`))
         },
         row.original.name
       )
@@ -131,7 +132,7 @@ watch(stockUrl, () => { void refresh() })
           color="neutral"
           variant="ghost"
           :aria-label="t('nav.warehouses')"
-          @click="navigateTo('/inventory/warehouses')"
+          @click="navigateTo(localePath('/inventory/warehouses'))"
         />
         <p class="whitespace-nowrap text-sm font-medium text-highlighted">
           {{ warehouse?.name || t('inventory.warehouse') }} · {{ t('inventory.stock') }} ({{ total }})

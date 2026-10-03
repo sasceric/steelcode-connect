@@ -6,6 +6,29 @@ For the complete purchasing, warehouse and Sales operating procedures, use the
 [Inventory and Sales guide](inventory-and-sales-guide.md). This file focuses on
 Shopware cutover and its acceptance evidence.
 
+## Import buttons: current delivered scope
+
+On Integrations → Shopware, both **Import catalogue** and **Import Sales** are
+implemented queued import workflows. They use the saved connection settings,
+show progress and record failures; an accepted queue request alone does not
+mean every record has imported successfully. Keep the worker running and check
+the completed run's failed count and logs.
+
+- **Import catalogue:** imports the enabled catalogue areas, including products
+  and variants, categories, manufacturers, properties/options, media,
+  translations, prices, custom-field definitions and values, and supporting
+  references. Run it before Sales so product and custom-field mappings exist.
+- **Import Sales:** imports the enabled Customers and Orders areas, including
+  customer addresses, order/customer links, commercial snapshots, line items,
+  payment transactions and deliveries/tracking. The history start date limits
+  orders, not customer profiles. Historical imports do not reserve or deduct
+  warehouse stock.
+
+This covers the agreed Shopware-to-Connect import scope, not every Shopware
+entity or plugin table. Document files, account passwords, payment-provider
+secrets and extension-specific entities are excluded. These buttons do not
+enable ongoing sync or bidirectional catalogue publication automatically.
+
 ## Before enabling ongoing sync
 
 1. Finish the catalogue and historical Sales imports. Map each stock-managed product and variant SKU. Do not enable ongoing sync while a historical Sales import is running.
@@ -49,6 +72,24 @@ The polling checkpoint advances only after every fetched record succeeds. A fail
 - Documents, accounting-grade payment reconciliation, and migration/export to WooCommerce, PrestaShop, Shopify, or other platforms are separate projects.
 
 These boundaries mean the Shopware full-order flow is testable, but the broader cross-platform or advanced-fulfillment module is not yet production-complete.
+
+## Open production follow-ups
+
+These are recorded release tasks, not completed functionality:
+
+- [ ] **Supervised workers and monitoring:** deploy the Scheduler/Messenger
+  workers as managed services with automatic restart and startup after reboot.
+  Capture logs and alert on failed messages, queue backlog, stale Sales
+  checkpoints and pending/failed stock publication. Verify recovery after a
+  worker restart; an interactive development worker is not sufficient.
+- [ ] **Non-default warehouse deactivation guard:** reject deactivation when
+  remaining balances or open stock operations would become stranded. Implement
+  tenant-scoped, concurrency-safe checks with actionable errors and regression
+  tests. Until then, keep affected warehouses active and clear or reassign
+  their balances and operations before disabling them.
+
+These follow-ups do not add missing catalogue or Sales import entities. They
+are operational and inventory-safety controls required before production use.
 
 ## Acceptance record (2026-09-30 local environment)
 

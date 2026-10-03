@@ -15,6 +15,8 @@ const props = withDefaults(
     searchPlaceholder: string
     multiple?: boolean
     showPlaceholderWhenSelected?: boolean
+    allOptionLabel?: string
+    allSelected?: boolean
     hasMore?: boolean
     loading?: boolean
     loadMore?: () => Promise<void> | void
@@ -28,9 +30,27 @@ const props = withDefaults(
 const emit = defineEmits<{
   'update:modelValue': [value: string | string[]]
   'update:searchTerm': [value: string]
+  'selectAll': []
 }>()
 
+// A UI-only choice: never send this sentinel to an API or fetch every option.
+const allOptionValue = '__searchable_select_all__'
+const menuItems = computed(() => props.multiple && props.allOptionLabel
+  ? [{ label: props.allOptionLabel, value: allOptionValue }, ...props.items]
+  : props.items)
+const menuValue = computed(() => props.multiple && props.allOptionLabel && props.allSelected
+  ? [allOptionValue]
+  : props.modelValue)
+
 const updateModelValue = (value: string | string[]) => {
+  if (props.multiple && props.allOptionLabel && Array.isArray(value)) {
+    if (value.includes(allOptionValue) && !props.allSelected) {
+      emit('selectAll')
+      return
+    }
+    emit('update:modelValue', value.filter(item => item !== allOptionValue))
+    return
+  }
   emit('update:modelValue', value)
 }
 
@@ -39,14 +59,11 @@ const updateSearchTerm = (value: string) => {
 }
 
 const isProductItem = (item: SearchableSelectItem) => Boolean(
-  item.productName || item.productNumber || item.variantCombination,
+  item.productName || item.productNumber || item.variantCombination
 )
 const productTitle = (item: SearchableSelectItem) => item.productName ?? item.label
 const productMeta = (item: SearchableSelectItem) => [item.productNumber, item.variantCombination]
   .filter((value): value is string => Boolean(value))
-  .join(' · ')
-const productTooltip = (item: SearchableSelectItem) => [productTitle(item), productMeta(item)]
-  .filter(Boolean)
   .join(' · ')
 
 const selectId = `searchable-select-${useId()}`
@@ -108,8 +125,8 @@ onBeforeUnmount(detachViewportListener)
 <template>
   <USelectMenu
     :id="selectId"
-    :model-value="modelValue"
-    :items="items"
+    :model-value="menuValue"
+    :items="menuItems"
     :data-searchable-select="selectId"
     value-key="value"
     :multiple="multiple"
@@ -132,7 +149,7 @@ onBeforeUnmount(detachViewportListener)
   >
     <template v-if="showPlaceholderWhenSelected" #default>
       <span class="text-muted">
-        {{ placeholder }}
+        {{ allSelected && allOptionLabel ? allOptionLabel : placeholder }}
       </span>
     </template>
     <template #item-label="{ item }">
@@ -180,5 +197,4 @@ onBeforeUnmount(detachViewportListener)
 :deep([data-slot='base']) {
   cursor: pointer !important;
 }
-
 </style>

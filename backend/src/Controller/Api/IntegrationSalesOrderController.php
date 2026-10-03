@@ -63,9 +63,7 @@ final class IntegrationSalesOrderController extends AbstractController
             throw $this->createAccessDeniedException();
         }
 
-        $membership = $entityManager->getRepository(TenantMembership::class)->findOneBy([
-            'user' => $user,
-        ]);
+        $membership = $entityManager->getRepository(TenantMembership::class)->forUser($user);
         if (!$membership instanceof TenantMembership || $membership->getRole() !== 'owner') {
             throw $this->createAccessDeniedException();
         }

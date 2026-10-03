@@ -2,6 +2,7 @@
 
 namespace App\Controller\Api;
 
+use App\Entity\Brand;
 use App\Entity\DeliveryTime;
 use App\Entity\Manufacturer;
 use App\Entity\Product;
@@ -10,6 +11,7 @@ use App\Entity\Tenant;
 use App\Entity\TenantMembership;
 use App\Entity\Unit;
 use App\Entity\User;
+use App\Service\ProductBrandService;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\JsonResponse;
@@ -23,13 +25,18 @@ use Symfony\Contracts\Translation\TranslatorInterface;
 final class ProductReferenceController extends AbstractController
 {
     #[Route('', methods: ['GET'])]
-    public function show(string $id, EntityManagerInterface $entityManager): JsonResponse
+    public function show(
+        string $id,
+        EntityManagerInterface $entityManager,
+        ProductBrandService $brands,
+    ): JsonResponse
     {
         $product = $this->product($id, $entityManager);
 
         return $this->json([
             'taxId' => $product->getTax()?->getId()->toRfc4122(),
             'manufacturerId' => $product->getManufacturer()?->getId()->toRfc4122(),
+            'brands' => $brands->payloads($brands->brands($product, $entityManager), $entityManager),
             'unitId' => $product->getUnit()?->getId()->toRfc4122(),
             'purchaseUnit' => $product->getPurchaseUnit(),
             'referenceUnit' => $product->getReferenceUnit(),
@@ -43,12 +50,28 @@ final class ProductReferenceController extends AbstractController
         Request $request,
         EntityManagerInterface $entityManager,
         TranslatorInterface $translator,
-    ): JsonResponse {
+        ProductBrandService $brands,
+    ): JsonResponse
+    {
         $product = $this->product($id, $entityManager);
         try {
             $data = $request->toArray();
         } catch (\JsonException) {
-            return $this->invalid();
+            return $this->invalid($translator);
+        }
+
+        $selectedBrands = [];
+        if (array_key_exists('brandIds', $data)) {
+            if (!is_array($data['brandIds']) || count($data['brandIds']) > 100) {
+                return $this->invalid($translator);
+            }
+            foreach (array_unique($data['brandIds'], SORT_REGULAR) as $brandId) {
+                $brand = $this->reference($brandId, Brand::class, $product->getTenant(), $entityManager);
+                if (!$brand instanceof Brand) {
+                    return $this->invalid($translator);
+                }
+                $selectedBrands[] = $brand;
+            }
         }
 
         $tax = $this->reference($data['taxId'] ?? null, Tax::class, $product->getTenant(), $entityManager);
@@ -66,6 +89,9 @@ final class ProductReferenceController extends AbstractController
 
         $product->updateReferences($tax, $unit, $purchaseUnit, $referenceUnit, $deliveryTime);
         $product->updateManufacturer($manufacturer instanceof Manufacturer ? $manufacturer : null);
+        if (array_key_exists('brandIds', $data)) {
+            $brands->select($product, $selectedBrands, $entityManager);
+        }
         $entityManager->flush();
 
         return $this->json(['message' => 'Product references saved.']);
@@ -76,7 +102,8 @@ final class ProductReferenceController extends AbstractController
         string $class,
         Tenant $tenant,
         EntityManagerInterface $entityManager,
-    ): object|false|null {
+    ): object|false|null
+    {
         if ($id === null || $id === '') {
             return null;
         }
@@ -109,7 +136,8 @@ final class ProductReferenceController extends AbstractController
         TranslatorInterface $translator,
         array $fields,
         bool $required = false,
-    ): JsonResponse {
+    ): JsonResponse
+    {
         $user = $this->getUser();
         $locale = $user instanceof User ? $user->getLocale() : 'bs';
         $labels = [];
@@ -173,7 +201,7 @@ final class ProductReferenceController extends AbstractController
             throw $this->createAccessDeniedException();
         }
 
-        $membership = $entityManager->getRepository(TenantMembership::class)->findOneBy(['user' => $user]);
+        $membership = $entityManager->getRepository(TenantMembership::class)->forUser($user);
         if (!$membership instanceof TenantMembership || $membership->getRole() !== 'owner') {
             throw $this->createAccessDeniedException();
         }

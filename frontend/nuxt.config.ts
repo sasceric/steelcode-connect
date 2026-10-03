@@ -29,7 +29,7 @@ export default defineNuxtConfig({
   },
 
   i18n: {
-    strategy: 'no_prefix',
+    strategy: 'prefix_except_default',
     defaultLocale: 'bs',
     langDir: 'locales',
     locales: [
@@ -37,10 +37,6 @@ export default defineNuxtConfig({
       { code: 'en', name: 'English', file: 'en.json' },
       { code: 'de', name: 'Deutsch', file: 'de.json' }
     ],
-    detectBrowserLanguage: {
-      useCookie: true,
-      cookieKey: 'steelcode_locale',
-      redirectOn: 'root'
-    }
+    detectBrowserLanguage: false
   }
 })

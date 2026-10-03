@@ -4,6 +4,7 @@ import type { FormSubmitEvent } from '@nuxt/ui'
 
 definePageMeta({ layout: false })
 
+const localePath = useLocalePath()
 const auth = useAuth()
 const toast = useToast()
 const { t } = useI18n()
@@ -28,7 +29,7 @@ const submit = async (event: FormSubmitEvent<Schema>) => {
 
   try {
     await auth.register(event.data.tenantName, event.data.email, event.data.password)
-    await navigateTo('/')
+    await navigateTo(localePath('/'))
   } catch (error) {
     toast.add({
       title: t('auth.unableToCreateAccount'),
@@ -79,7 +80,7 @@ const submit = async (event: FormSubmitEvent<Schema>) => {
       <template #footer>
         <p class="text-sm text-muted">
           {{ t('auth.alreadyHaveAccount') }}
-          <NuxtLink to="/login" class="font-medium text-primary">
+          <NuxtLink :to="localePath('/login')" class="font-medium text-primary">
             {{ t('auth.signIn') }}
           </NuxtLink>
         </p>

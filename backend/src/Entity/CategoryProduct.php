@@ -8,6 +8,8 @@ use Doctrine\ORM\Mapping as ORM;
 #[ORM\Table(name: 'category_products')]
 class CategoryProduct
 {
+    use CatalogueAssignmentSources;
+
     #[ORM\Id]
     #[ORM\ManyToOne]
     #[ORM\JoinColumn(nullable: false, onDelete: 'CASCADE')]
@@ -28,7 +30,13 @@ class CategoryProduct
         $this->position = $position;
     }
 
-    public function getProduct(): Product { return $this->product; }
+    public function getProduct(): Product
+    {
+        return $this->product;
+    }
 
-    public function getCategory(): Category { return $this->category; }
+    public function getCategory(): Category
+    {
+        return $this->category;
+    }
 }

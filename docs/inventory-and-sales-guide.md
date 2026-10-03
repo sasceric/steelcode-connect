@@ -14,6 +14,15 @@ remains the place where checkout, shipment confirmation and customer refunds
 are performed. Connect can become the authority for the stock quantity
 published to Shopware after a deliberate stock reconciliation.
 
+WooCommerce now uses these same catalogue, Customer, Order, warehouse and queue
+workflows. Its provider-specific import, ongoing-order cutover and guarded stock
+publication procedures are documented in the
+[WooCommerce operating guide](woocommerce-import.md). In particular, Woo does
+not supply authoritative core shipment quantities: record cumulative physical
+shipments in the existing Connect reconciliation form. Do not apply Shopware's
+delivery-state assumptions or enable Connect stock authority for Woo shared
+parent stock pools.
+
 ## Contents
 
 1. [People, ownership and the complete business flow](#1-people-ownership-and-the-complete-business-flow)
@@ -227,10 +236,20 @@ is not fulfilment-enabled. The allocator tries Main first, then Branch. Stock
 held only in the inspection location does not increase the published channel stock.
 
 Before deactivating a non-default warehouse, resolve its balances, reservations,
-incoming POs and open transfers. The current update endpoint does not enforce
-an empty-warehouse check for non-default locations; treat this as an operating
-restriction until that guard is added. Deactivation excludes the warehouse from
-new allocation/channel stock calculations; it does not clear its existing ledger.
+quarantined customer returns and open operations. This is enforced by the API,
+not just the selector: nonzero on-hand/reserved/unavailable/incoming quantities,
+reserved order allocations, draft/sent/partially received POs, draft/in-transit
+transfers at either end, and draft stock counts block deactivation with HTTP 409.
+The edit modal keeps the warehouse unchanged and explains what must be resolved.
+Complete or cancel documents using their normal workflows; receive an in-transit
+transfer rather than deleting it. Historical completed/cancelled documents and
+zero-balance inventory rows do not prevent deactivation.
+
+Once clear, open its **Edit** action, switch **Active** off, and save. An empty
+warehouse can be deactivated and later reactivated. The Default warehouse stays
+active. Deactivation does not clear historical ledgers. Warehouse row locking
+serializes deactivation with stock writes and creation of POs, transfers and
+counts, preventing an operation from quietly adding work after the check.
 
 ### 4.3 Establish opening stock
 
@@ -1153,7 +1172,7 @@ do not change physical stock merely to make an invoice pass.
 This section is for the application operator. Business users should not need
 to run terminal commands for normal daily work.
 
-### 22.1 Run the existing worker
+### 22.1 Run the queue lanes
 
 From the repository root:
 
@@ -1162,10 +1181,14 @@ cd backend
 composer imports:consume
 ```
 
-This consumes `scheduler_default` and `async`, disables Symfony debug/query
-profiling, and applies a 256 MB worker memory limit. The scheduler triggers
-Sales polling and stock-outbox dispatch every minute. It also serves other
-scheduled application work.
+This now consumes **bulk `async` only**. Also run `composer sync:control`,
+`composer sync:sales`, `composer sync:stock` and `composer sync:catalogue`, each
+in its own terminal/process. All disable Symfony debug/query profiling and
+recycle after one hour or their configured memory limit. Control consumes
+`scheduler_default` and lightweight `control` coordination; Sales and stock
+still poll/dispatch every minute. Catalogue change coordination ticks every five
+seconds without a full catalogue scan. See the complete
+[queue operations guide](sync-queue-operations.md) for deployment and monitoring.
 
 An interactive terminal process is suitable for development, but not durable
 operation. Production needs a process supervisor that starts the worker,
@@ -1217,7 +1240,9 @@ Stock dispatch retains the Sales-readiness gate. Do not mark events dispatched
 by hand or advance a checkpoint to hide a failure.
 
 Integration import logs are visible on the connection screen and are written to
-`backend/var/log/integrations/shopware-YYYY-MM-DD.log`. Runtime/worker errors
+`backend/var/log/integrations/<tenant UUID>/<connector>-YYYY-MM-DD.log`.
+Historical flat logs remain readable through the owning connection/run.
+Runtime/worker errors
 must also be captured by the supervisor/application logging. Avoid storing
 credentials or full customer payloads in diagnostic output.
 
@@ -1237,6 +1262,13 @@ database shards, dedicated workers or dedicated instances should route the
 same workflows rather than replace them. Data visibility must follow active
 tenant membership; changing a URL or submitting an arbitrary UUID must not
 become a way to access another company.
+
+Current API company resolution uses one shared membership lookup. An account with
+no membership or multiple possible active companies is denied rather than silently
+selecting a company. Company switching is not implemented yet. Local two-company
+HTTP, job, credential/cache, import identity and media/log acceptance is documented
+in [Tenant-isolation acceptance](tenant-isolation-acceptance.md); it does not replace
+production or role-by-role security checks.
 
 Current operational mutation controls largely require the tenant owner. Full
 staff membership/invitations and centralized role permissions are deferred.
@@ -1324,8 +1356,8 @@ checked by the transactional tests.
 2. Reconcile the real merchant's physical stock and mappings and perform its
    own controlled cutover.
 3. Complete tenant membership/permissions and route audits before staff access.
-4. Add the non-default warehouse deactivation guard for remaining balances and
-   open operations; until then, follow the operating restriction in section 4.
+4. Apply the warehouse deactivation workflow in section 4. The balance/open-work
+   guard is implemented and covered by transactional and concurrent-write tests.
 5. Implement coordinated checkout/stock handling if strict oversell prevention
    or high-volume real-time operation is required.
 
@@ -1333,7 +1365,8 @@ checked by the transactional tests.
 
 - Kimtec/Comtrade catalogue feeds and automatic distributor ordering until
   their adapters are built with access/specifications.
-- Non-Shopware Sales/stock adapters and complete cross-platform migration/export.
+- Additional Sales/stock adapters beyond the delivered Shopware/Woo scope, and
+  complete cross-platform customer/order migration/export.
 - Shopware App webhooks, outbound shipment writing and a shared checkout
   reservation mechanism.
 - Customer document binaries, password migration or payment-provider vault data.

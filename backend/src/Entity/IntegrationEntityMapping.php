@@ -7,6 +7,10 @@ use Symfony\Component\Uid\Uuid;
 
 #[ORM\Entity]
 #[ORM\Table(name: 'integration_entity_mappings')]
+#[ORM\Index(
+    name: 'idx_integration_mapping_local_identity',
+    columns: ['tenant_id', 'connection_id', 'entity_type', 'local_id'],
+)]
 #[ORM\UniqueConstraint(
     name: 'uniq_integration_entity_mapping_source',
     columns: ['connection_id', 'entity_type', 'external_id'],

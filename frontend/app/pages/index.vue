@@ -3,6 +3,7 @@ import { sub } from 'date-fns'
 import type { DropdownMenuItem } from '@nuxt/ui'
 import type { Period, Range } from '~/types'
 
+const localePath = useLocalePath()
 const { isNotificationsSlideoverOpen } = useDashboard()
 
 const items = [
@@ -10,12 +11,12 @@ const items = [
     {
       label: 'New mail',
       icon: 'i-lucide-send',
-      to: '/inbox',
+      to: localePath('/inbox'),
     },
     {
       label: 'New customer',
       icon: 'i-lucide-user-plus',
-      to: '/customers',
+      to: localePath('/customers'),
     },
   ],
 ] satisfies DropdownMenuItem[][]

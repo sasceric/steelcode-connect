@@ -30,6 +30,7 @@ type ImportRun = {
   failedItems: number
   failureReason: string | null
   createdAt: string
+  updatedAt: string
   startedAt: string | null
   completedAt: string | null
 }
@@ -52,6 +53,7 @@ type SalesSyncStatus = {
   pendingOrders: number
 }
 
+const localePath = useLocalePath()
 const getApiErrorMessage = (error: unknown): string | null => {
   if (
     typeof error !== 'object'
@@ -80,6 +82,7 @@ const selectedRunId = ref<string>()
 const activeTab = useRouteTab('import')
 const saving = ref(false)
 const queueing = ref(false)
+const exportEditor = ref<{ save: () => Promise<boolean> }>()
 let pollingTimer: ReturnType<typeof setInterval> | null = null
 let lastSalesStatusLoadAt = 0
 
@@ -120,6 +123,12 @@ const tabs = computed(() => [
     value: 'import'
   },
   {
+    label: t('catalogueExport.tab'),
+    icon: 'i-lucide-upload',
+    value: 'export',
+    disabled: !['shopware', 'woocommerce'].includes(connection.value?.connectorKey ?? '')
+  },
+  {
     label: t('integrations.mappingTab'),
     icon: 'i-lucide-arrow-left-right',
     value: 'mapping'
@@ -143,8 +152,8 @@ const importAreas = computed(() => [
   },
   {
     key: 'manufacturers',
-    label: t('integrations.areaManufacturers'),
-    description: t('integrations.areaManufacturersDescription')
+    label: t(connection.value?.connectorKey === 'woocommerce' ? 'integrations.areaBrands' : 'integrations.areaManufacturers'),
+    description: t(connection.value?.connectorKey === 'woocommerce' ? 'integrations.areaBrandsDescription' : 'integrations.areaManufacturersDescription')
   },
   {
     key: 'taxes',
@@ -197,6 +206,11 @@ const importAreas = computed(() => [
     description: t('integrations.areaChannelPublicationsDescription')
   },
   {
+    key: 'media',
+    label: t('integrations.areaMedia'),
+    description: t('integrations.areaMediaDescription')
+  },
+  {
     key: 'productDownloads',
     label: t('integrations.areaProductDownloads'),
     description: t('integrations.areaProductDownloadsDescription')
@@ -204,13 +218,17 @@ const importAreas = computed(() => [
   {
     key: 'crossSellings',
     label: t('integrations.areaCrossSellings'),
-    description: t('integrations.areaCrossSellingsDescription')
+    description: t(connection.value?.connectorKey === 'woocommerce' ? 'integrations.areaWooCrossSellingsDescription' : 'integrations.areaCrossSellingsDescription')
   }
-])
+].filter(area => connection.value?.connectorKey === 'woocommerce'
+  ? !['units', 'deliveryTimes'].includes(area.key)
+  : area.key !== 'media'))
 const productMatchOptions = computed(() => [
   {
     value: 'externalId',
-    label: t('integrations.matchExternalId'),
+    label: t('integrations.matchExternalId', {
+      provider: connection.value?.connectorKey === 'woocommerce' ? 'WooCommerce' : 'Shopware'
+    }),
     description: t('integrations.matchExternalIdDescription'),
     disabled: true
   },
@@ -231,48 +249,6 @@ const formattedDate = (value: string) =>
     dateStyle: 'medium',
     timeStyle: 'short'
   }).format(new Date(value))
-
-const progress = (run: ImportRun) =>
-  run.totalItems > 0
-    ? Math.min(run.processedItems, run.totalItems)
-    : null
-
-const percentage = (run: ImportRun) =>
-  run.totalItems > 0
-    ? Math.round((run.processedItems / run.totalItems) * 100)
-    : 0
-
-const progressLabel = (run: ImportRun) => {
-  if (run.status === 'queued') {
-    return t('integrations.importQueuedStatus')
-  }
-
-  if (run.type === 'sales' && run.totalItems > 0) {
-    return t('integrations.salesImportProgress', {
-      processed: run.processedItems,
-      total: run.totalItems,
-      percentage: percentage(run)
-    })
-  }
-
-  if (run.status === 'completed' && run.totalItems > 0) {
-    return t('integrations.importProgressWithPercent', {
-      processed: run.processedItems,
-      total: run.totalItems,
-      percentage: percentage(run)
-    })
-  }
-
-  if (run.currentStage !== 'products') {
-    return stageLabel(run.currentStage)
-  }
-
-  return t('integrations.importProgressWithPercent', {
-    processed: run.processedItems,
-    total: run.totalItems,
-    percentage: percentage(run)
-  })
-}
 
 const statusLabel = (status: ImportRun['status']) =>
   t(`integrations.importStatus.${status}`)
@@ -335,7 +311,7 @@ const loadLogs = async () => {
 }
 
 const loadSalesSyncStatus = async () => {
-  if (connection.value?.connectorKey !== 'shopware') {
+  if (!['shopware', 'woocommerce'].includes(connection.value?.connectorKey ?? '')) {
     return
   }
 
@@ -356,6 +332,10 @@ const load = async () => {
 }
 
 const save = async () => {
+  if (activeTab.value === 'export' || activeTab.value === 'mapping') {
+    await exportEditor.value?.save()
+    if (activeTab.value === 'export') return
+  }
   if (!settings.value) {
     return
   }
@@ -489,7 +469,7 @@ await load()
           <UDashboardSidebarCollapse />
           <UButton
             :label="t('integrations.backToIntegrations')"
-            to="/integrations"
+            :to="localePath('/integrations')"
             color="neutral"
             variant="ghost"
           />
@@ -540,7 +520,7 @@ await load()
                 {{ t('integrations.importScope') }}
               </h2>
               <p class="mt-1 text-sm text-muted">
-                {{ t('integrations.importScopeDescription') }}
+                {{ t(connection?.connectorKey === 'woocommerce' ? 'integrations.wooImportScopeDescription' : 'integrations.importScopeDescription') }}
               </p>
             </div>
             <UButton
@@ -569,7 +549,7 @@ await load()
             </div>
           </UPageCard>
 
-          <UPageCard v-if="connection?.connectorKey === 'shopware'">
+          <UPageCard v-if="['shopware', 'woocommerce'].includes(connection?.connectorKey ?? '')">
             <template #header>
               <div class="flex flex-wrap items-center justify-between gap-3">
                 <div>
@@ -633,44 +613,35 @@ await load()
             color="info"
             variant="subtle"
             :title="t('integrations.importPipelineTitle')"
-            :description="t('integrations.importPipelineDescription')"
+            :description="t(connection?.connectorKey === 'woocommerce' ? 'integrations.wooImportPipelineDescription' : 'integrations.importPipelineDescription')"
           />
 
-          <UPageCard v-if="visibleRun" variant="subtle">
-            <div class="flex flex-wrap items-center justify-between gap-3 text-sm">
-              <div class="flex items-center gap-2">
-                <span class="font-medium text-highlighted">
-                  {{ stageLabel(visibleRun.currentStage) }}
-                </span>
-                <UBadge
-                  :label="statusLabel(visibleRun.status)"
-                  :color="visibleRun.status === 'failed' ? 'error' : visibleRun.status === 'completed' ? 'success' : 'primary'"
-                  variant="subtle"
-                  size="xs"
-                />
-              </div>
-              <div class="flex items-center gap-3">
-                <span class="text-muted">
-                  {{ progressLabel(visibleRun) }}
-                </span>
-                <IntegrationImportCancelButton
-                  v-if="['queued', 'running'].includes(visibleRun.status)"
-                  :connection-id="connectionId"
-                  :run-id="visibleRun.id"
-                  @cancelled="loadRuns"
-                />
-              </div>
-            </div>
-            <UProgress
-              class="mt-2"
-              :model-value="progress(visibleRun) || 0"
-              :max="visibleRun.totalItems || 100"
-              size="sm"
-            />
-          </UPageCard>
+          <IntegrationRunProgress
+            v-if="visibleRun"
+            :connection-id="connectionId"
+            :run="visibleRun"
+            @cancelled="loadRuns"
+          />
         </template>
 
+        <IntegrationCatalogueExport
+          v-else-if="['shopware', 'woocommerce'].includes(connection?.connectorKey ?? '') && activeTab === 'export'"
+          ref="exportEditor"
+          :connection-id="connectionId"
+          :connector-key="connection?.connectorKey"
+          mode="export"
+          @queued="loadRuns"
+        />
+
         <template v-else-if="settings && activeTab === 'mapping'">
+          <IntegrationCatalogueExport
+            v-if="['shopware', 'woocommerce'].includes(connection?.connectorKey ?? '')"
+            ref="exportEditor"
+            :connection-id="connectionId"
+            :connector-key="connection?.connectorKey"
+            mode="mapping"
+            @queued="loadRuns"
+          />
           <div>
             <h2 class="text-lg font-semibold text-highlighted">
               {{ t('integrations.productMatching') }}
@@ -688,7 +659,7 @@ await load()
             />
           </UPageCard>
 
-          <UPageCard>
+          <UPageCard v-if="!['shopware', 'woocommerce'].includes(connection?.connectorKey ?? '')">
             <h3 class="font-medium text-highlighted">
               {{ t('integrations.canonicalMapping') }}
             </h3>
@@ -712,10 +683,10 @@ await load()
         <template v-else-if="activeTab === 'history'">
           <div>
             <h2 class="text-lg font-semibold text-highlighted">
-              {{ t('integrations.importHistory') }}
+              {{ t('catalogueExport.historyTitle') }}
             </h2>
             <p class="mt-1 text-sm text-muted">
-              {{ t('integrations.importHistoryDescription') }}
+              {{ t('catalogueExport.historyDescription') }}
             </p>
           </div>
 
@@ -731,7 +702,7 @@ await load()
               <div>
                 <div class="flex items-center gap-2">
                   <p class="font-medium text-highlighted">
-                    {{ t(run.type === 'sales' ? 'integrations.importSales' : 'integrations.importProducts') }}
+                    {{ t(run.type === 'export_sync' ? 'catalogueExport.syncNow' : run.type === 'export' ? 'catalogueExport.publish' : run.type === 'export_preview' ? 'catalogueExport.preview' : run.type === 'sales' ? 'integrations.importSales' : 'integrations.importProducts') }}
                   </p>
                   <UBadge
                     :label="statusLabel(run.status)"

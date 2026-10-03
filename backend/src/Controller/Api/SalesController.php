@@ -293,7 +293,7 @@ final class SalesController extends AbstractController
     ): JsonResponse {
         $tenant = $this->tenant($entityManager);
         $user = $this->getUser();
-        $membership = $entityManager->getRepository(TenantMembership::class)->findOneBy(['user' => $user]);
+        $membership = $entityManager->getRepository(TenantMembership::class)->forUser($user);
         if (!$membership instanceof TenantMembership || $membership->getRole() !== 'owner') {
             throw $this->createAccessDeniedException();
         }
@@ -465,7 +465,7 @@ final class SalesController extends AbstractController
         if (!$user instanceof User) {
             throw $this->createAccessDeniedException();
         }
-        $membership = $entityManager->getRepository(TenantMembership::class)->findOneBy(['user' => $user]);
+        $membership = $entityManager->getRepository(TenantMembership::class)->forUser($user);
         if (!$membership instanceof TenantMembership) {
             throw $this->createAccessDeniedException();
         }

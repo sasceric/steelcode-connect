@@ -204,24 +204,45 @@ final class ManufacturerController extends AbstractController
     }
 
     #[Route('/{id}/products', methods: ['PUT'])]
-    public function products(string $id, Request $request, EntityManagerInterface $entityManager): JsonResponse
+    public function products(
+        string $id,
+        Request $request,
+        EntityManagerInterface $entityManager,
+    ): JsonResponse
     {
         $manufacturer = $this->manufacturer($id, $entityManager, true);
         $productIds = $this->data($request)['productIds'] ?? [];
-        if (!is_array($productIds) || count($productIds) !== count(array_unique($productIds))) {
+        if (!is_array($productIds)) {
             return $this->invalid();
         }
-        $products = $entityManager->getRepository(Product::class)->findBy([
+        foreach ($productIds as $productId) {
+            if (!is_string($productId) || !Uuid::isValid($productId)) {
+                return $this->invalid();
+            }
+        }
+        if (count($productIds) !== count(array_unique($productIds))) {
+            return $this->invalid();
+        }
+        $repository = $entityManager->getRepository(Product::class);
+        $products = $productIds === [] ? [] : $repository->findBy([
             'tenant' => $manufacturer->getTenant(),
+            'id' => $productIds,
         ]);
+        if (count($products) !== count($productIds)) {
+            return $this->invalid();
+        }
         $requested = array_fill_keys($productIds, true);
-        foreach ($products as $product) {
+        foreach ($repository->findBy([
+            'tenant' => $manufacturer->getTenant(),
+            'manufacturer' => $manufacturer,
+        ]) as $product) {
             $productId = $product->getId()->toRfc4122();
-            if (isset($requested[$productId])) {
-                $product->updateManufacturer($manufacturer);
-            } elseif ($product->getManufacturer()?->getId()->equals($manufacturer->getId())) {
+            if (!isset($requested[$productId])) {
                 $product->updateManufacturer(null);
             }
+        }
+        foreach ($products as $product) {
+            $product->updateManufacturer($manufacturer);
         }
         $entityManager->flush();
 
@@ -330,7 +351,7 @@ final class ManufacturerController extends AbstractController
         if (!$user instanceof User) {
             throw $this->createAccessDeniedException();
         }
-        $membership = $entityManager->getRepository(TenantMembership::class)->findOneBy(['user' => $user]);
+        $membership = $entityManager->getRepository(TenantMembership::class)->forUser($user);
         if (!$membership instanceof TenantMembership || ($ownerRequired && $membership->getRole() !== 'owner')) {
             throw $this->createAccessDeniedException();
         }

@@ -22,6 +22,7 @@ type Product = {
   updatedAt: string
 }
 
+const localePath = useLocalePath()
 const { t } = useI18n()
 const route = useRoute()
 const auth = useAuth()
@@ -29,6 +30,7 @@ const toast = useAppToast()
 const UButton = resolveComponent('UButton')
 const UBadge = resolveComponent('UBadge')
 const UDropdownMenu = resolveComponent('UDropdownMenu')
+const ProductTableCell = resolveComponent('ProductTableCell')
 const open = ref(false)
 const saving = ref(false)
 const productsDeleting = ref(false)
@@ -146,7 +148,7 @@ const getRowItems = (row: Row<Product>) => [
     {
       label: t('products.open'),
       icon: 'i-lucide-arrow-up-right',
-      onSelect: () => navigateTo(`/catalogue/products/${row.original.id}`)
+      onSelect: () => navigateTo(localePath(`/catalogue/products/${row.original.id}`))
     }
   ],
   [
@@ -164,34 +166,14 @@ const columns: TableColumn<Product>[] = [
     accessorKey: 'name',
     header: t('products.product'),
     cell: ({ row }) =>
-      h('div', { class: 'flex min-w-0 items-center gap-3' }, [
-        h('img', {
-          src: row.original.coverUrl || '/placeholder-light.webp',
-          alt: row.original.name,
-          class: 'size-8 shrink-0 rounded-md border border-default object-cover'
-        }),
-        h('div', { class: 'flex min-w-0 items-center gap-1.5' }, [
-          h(
-            'button',
-            {
-              class: 'cursor-pointer truncate text-left font-medium text-highlighted hover:text-primary',
-              onClick: () => navigateTo(`/catalogue/products/${row.original.id}`)
-            },
-            row.original.parentId ? `↳ ${row.original.name}` : row.original.name
-          ),
-          row.original.hasVariants
-            ? h(UButton, {
-                icon: 'i-lucide-git-branch',
-                color: 'neutral',
-                variant: 'ghost',
-                size: 'xs',
-                title: t('products.openVariants'),
-                ariaLabel: t('products.openVariants'),
-                onClick: () => navigateTo(`/catalogue/products/${row.original.id}?tab=variants`)
-              })
-            : null
-        ])
-      ])
+      h(ProductTableCell, {
+        id: row.original.id,
+        name: row.original.name,
+        sku: row.original.sku,
+        coverUrl: row.original.coverUrl,
+        isVariant: !!row.original.parentId,
+        hasVariants: row.original.hasVariants
+      })
   },
   {
     accessorKey: 'sku',
@@ -356,7 +338,7 @@ const add = async () => {
     open.value = false
     form.name = ''
     toast.success(t('products.created'), t('common.changesSaved'))
-    await navigateTo(`/catalogue/products/${response.product.id}`)
+    await navigateTo(localePath(`/catalogue/products/${response.product.id}`))
   } catch (error: unknown) {
     formValidation.notifyApiError(
       error,

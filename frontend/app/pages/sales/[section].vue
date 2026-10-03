@@ -33,6 +33,7 @@ type PickList = {
   lineCount: number
 }
 
+const localePath = useLocalePath()
 const route = useRoute()
 const { t } = useI18n()
 const UButton = resolveComponent('UButton')
@@ -87,7 +88,7 @@ const orderColumns = computed<TableColumn<Order>[]>(() => [
       'button',
       {
         class: 'cursor-pointer font-medium text-primary hover:underline',
-        onClick: () => navigateTo(`/sales/orders/${row.original.id}`)
+        onClick: () => navigateTo(localePath(`/sales/orders/${row.original.id}`))
       },
       row.original.number
     )
@@ -122,7 +123,7 @@ const orderColumns = computed<TableColumn<Order>[]>(() => [
         items: [[{
           label: t('purchasing.view'),
           icon: 'i-lucide-eye',
-          onSelect: () => navigateTo(`/sales/orders/${row.original.id}`)
+          onSelect: () => navigateTo(localePath(`/sales/orders/${row.original.id}`))
         }]],
         content: { align: 'end' }
       }, () => h(UButton, {
@@ -142,7 +143,7 @@ const customerColumns = computed<TableColumn<Customer>[]>(() => [
         'button',
         {
           class: 'cursor-pointer font-medium text-primary hover:underline',
-          onClick: () => navigateTo(`/sales/customers/${row.original.id}`)
+          onClick: () => navigateTo(localePath(`/sales/customers/${row.original.id}`))
         },
         row.original.name
       ),
@@ -172,7 +173,7 @@ const customerColumns = computed<TableColumn<Customer>[]>(() => [
         items: [[{
           label: t('purchasing.view'),
           icon: 'i-lucide-eye',
-          onSelect: () => navigateTo(`/sales/customers/${row.original.id}`)
+          onSelect: () => navigateTo(localePath(`/sales/customers/${row.original.id}`))
         }]],
         content: { align: 'end' }
       }, () => h(UButton, {
@@ -191,7 +192,7 @@ const pickListColumns = computed<TableColumn<PickList>[]>(() => [
       'button',
       {
         class: 'cursor-pointer font-medium text-primary hover:underline',
-        onClick: () => navigateTo(`/sales/picklists/${row.original.orderId}`)
+        onClick: () => navigateTo(localePath(`/sales/picklists/${row.original.orderId}`))
       },
       row.original.number
     )
@@ -210,7 +211,7 @@ const pickListColumns = computed<TableColumn<PickList>[]>(() => [
         items: [[{
           label: t('sales.viewPickList'),
           icon: 'i-lucide-clipboard-list',
-          onSelect: () => navigateTo(`/sales/picklists/${row.original.orderId}`)
+          onSelect: () => navigateTo(localePath(`/sales/picklists/${row.original.orderId}`))
         }]],
         content: { align: 'end' }
       }, () => h(UButton, {

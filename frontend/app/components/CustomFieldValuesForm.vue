@@ -13,6 +13,8 @@ type FieldConfig = {
   step?: number
   dateType?: string
   multiSelect?: boolean
+  readOnly?: boolean
+  entityType?: string
 }
 
 type Field = {
@@ -68,7 +70,7 @@ const update = (technicalName: string, value: unknown) => {
       :label="label(field)"
       :name="field.technicalName"
       :required="Boolean(field.config.required)"
-      :class="field.type === 'editor' ? 'sm:col-span-2' : ''"
+      :class="['editor', 'json'].includes(field.type) ? 'sm:col-span-2' : ''"
     >
       <template #label>
         <span class="text-primary">{{ label(field) }}</span>
@@ -78,8 +80,15 @@ const update = (technicalName: string, value: unknown) => {
           <UIcon name="i-lucide-circle-help" class="size-4 cursor-help text-primary" />
         </UTooltip>
       </template>
+      <UTextarea
+        v-if="field.type === 'json'"
+        :model-value="JSON.stringify(modelValue[field.technicalName] ?? null, null, 2)"
+        :rows="4"
+        readonly
+        class="w-full font-mono text-xs"
+      />
       <UInput
-        v-if="field.type === 'text'"
+        v-else-if="field.type === 'text'"
         :model-value="modelValue[field.technicalName] as string"
         class="w-full"
         :placeholder="field.config.placeholder?.[locale] || field.config.placeholder?.[fallbackLocale]"

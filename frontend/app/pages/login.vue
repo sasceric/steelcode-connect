@@ -4,6 +4,7 @@ import type { FormSubmitEvent } from '@nuxt/ui'
 
 definePageMeta({ layout: false })
 
+const localePath = useLocalePath()
 const auth = useAuth()
 const toast = useToast()
 const { t } = useI18n()
@@ -26,7 +27,7 @@ const submit = async (event: FormSubmitEvent<Schema>) => {
 
   try {
     await auth.login(event.data.email, event.data.password)
-    await navigateTo('/')
+    await navigateTo(localePath('/'))
   } catch (error) {
     toast.add({
       title: t('auth.unableToSignIn'),
@@ -68,7 +69,7 @@ const submit = async (event: FormSubmitEvent<Schema>) => {
         </UFormField>
 
         <div class="flex justify-end">
-          <NuxtLink to="/forgot-password" class="text-sm font-medium text-primary">
+          <NuxtLink :to="localePath('/forgot-password')" class="text-sm font-medium text-primary">
             {{ t('auth.forgotPassword') }}
           </NuxtLink>
         </div>
@@ -79,7 +80,7 @@ const submit = async (event: FormSubmitEvent<Schema>) => {
       <template #footer>
         <p class="text-sm text-muted">
           {{ t('auth.newHere') }}
-          <NuxtLink to="/signup" class="font-medium text-primary">
+          <NuxtLink :to="localePath('/signup')" class="font-medium text-primary">
             {{ t('auth.createAccount') }}
           </NuxtLink>
         </p>

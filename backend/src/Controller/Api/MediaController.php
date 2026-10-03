@@ -6,6 +6,8 @@ use App\Entity\Media;
 use App\Entity\Tenant;
 use App\Entity\TenantMembership;
 use App\Entity\User;
+use App\Http\PrivateMediaResponse;
+use App\Service\TenantMediaStorage;
 use Doctrine\ORM\EntityManagerInterface;
 use Symfony\Bundle\FrameworkBundle\Controller\AbstractController;
 use Symfony\Component\HttpFoundation\BinaryFileResponse;
@@ -90,20 +92,18 @@ final class MediaController extends AbstractController
     public function download(
         string $id,
         EntityManagerInterface $entityManager,
-    ): BinaryFileResponse {
+        TenantMediaStorage $storage,
+    ): BinaryFileResponse
+    {
         $tenant = $this->tenant($entityManager);
         $media = $this->media($id, $tenant, $entityManager);
-        $storageKey = $media->getStorageKey();
-        $projectDirectory = $this->getParameter('kernel.project_dir');
-        $path = str_starts_with($storageKey, 'product-media/')
-            ? $projectDirectory.'/var/'.substr($storageKey, 0)
-            : $projectDirectory.'/var/media/'.$storageKey;
-
-        if (!is_file($path)) {
-            throw $this->createNotFoundException();
+        try {
+            $path = $storage->path($media, $tenant);
+        } catch (\DomainException $exception) {
+            throw $this->createNotFoundException('The media file is not available.', $exception);
         }
 
-        return new BinaryFileResponse($path);
+        return PrivateMediaResponse::inline($path, $media);
     }
 
     private function media(
@@ -141,7 +141,7 @@ final class MediaController extends AbstractController
 
         $membership = $entityManager
             ->getRepository(TenantMembership::class)
-            ->findOneBy(['user' => $user]);
+            ->forUser($user);
 
         if (
             !$membership instanceof TenantMembership

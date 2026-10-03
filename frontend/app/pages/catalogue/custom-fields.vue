@@ -10,12 +10,14 @@ type CustomFieldSet = {
   fields: unknown[]
 }
 
+const localePath = useLocalePath()
 const { t } = useI18n()
 const toast = useAppToast()
 const auth = useAuth()
 const route = useRoute()
+const routeBaseName = useRouteBaseName()
 const customFieldsPath = computed(() =>
-  route.path.startsWith('/shop/')
+  String(routeBaseName(route) || '').startsWith('shop-')
     ? '/shop/custom-fields'
     : '/catalogue/custom-fields'
 )
@@ -69,7 +71,7 @@ const setColumns: TableColumn<CustomFieldSet>[] = [
         'button',
         {
           class: 'cursor-pointer font-medium text-highlighted hover:text-primary',
-          onClick: () => navigateTo(`${customFieldsPath.value}/${row.original.id}`)
+          onClick: () => navigateTo(localePath(`${customFieldsPath.value}/${row.original.id}`))
         },
         setLabel(row.original)
       )
@@ -114,7 +116,7 @@ const setColumns: TableColumn<CustomFieldSet>[] = [
                 {
                   label: t('common.edit'),
                   icon: 'i-lucide-pencil',
-                  onSelect: () => navigateTo(`${customFieldsPath.value}/${row.original.id}`)
+                  onSelect: () => navigateTo(localePath(`${customFieldsPath.value}/${row.original.id}`))
                 }
               ]
             ],
@@ -180,7 +182,7 @@ const create = async () => {
     })
     await refresh()
     createOpen.value = false
-    await navigateTo(`${customFieldsPath.value}/${response.set.id}`)
+    await navigateTo(localePath(`${customFieldsPath.value}/${response.set.id}`))
   } catch (error: any) {
     validation.notifyApiError(error, toast, t('common.error'), t('common.tryAgain'))
   } finally {

@@ -178,6 +178,9 @@ class SalesOrder
 
     public function needsShipmentReconciliation(): bool
     {
+        if (($this->sourcePayload['shipmentQuantitiesUnavailable'] ?? false) === true) {
+            return true;
+        }
         $allShipped = !$this->deliveries->isEmpty();
         $missingPositions = false;
         $hasPositionDetails = false;

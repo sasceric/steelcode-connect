@@ -25,6 +25,11 @@ final class InventoryService
         if (!$entityManager->getConnection()->isTransactionActive()) {
             throw new \LogicException('Stock changes require a database transaction.');
         }
+        if (!$product->getTenant()->getId()->equals($tenant->getId())) {
+            throw new \DomainException('The product does not belong to this tenant.');
+        }
+
+        $this->lockWarehouse($tenant, $warehouse, $entityManager);
 
         $key = implode(':', [
             $tenant->getId()->toRfc4122(),
@@ -35,6 +40,93 @@ final class InventoryService
             'SELECT pg_advisory_xact_lock(hashtextextended(?, 0))',
             [$key],
         );
+    }
+
+    /** Shared warehouse lock serializes operational writes with deactivation. */
+    public function lockWarehouse(
+        Tenant $tenant,
+        Warehouse $warehouse,
+        EntityManagerInterface $entityManager,
+    ): void
+    {
+        $database = $entityManager->getConnection();
+        if (!$database->isTransactionActive()) {
+            throw new \LogicException('Warehouse operations require a database transaction.');
+        }
+        if (!$warehouse->getTenant()->getId()->equals($tenant->getId())) {
+            throw new \DomainException('The warehouse does not belong to this tenant.');
+        }
+        $row = $database->fetchAssociative(
+            'SELECT active FROM warehouses WHERE tenant_id = :tenant AND id = :warehouse FOR SHARE',
+            ['tenant' => (string) $tenant->getId(), 'warehouse' => (string) $warehouse->getId()],
+        );
+        if (!$row || !$row['active']) {
+            throw new \DomainException('The warehouse is inactive. Reactivate it before starting an inventory operation.');
+        }
+    }
+
+    /** Called while holding an exclusive warehouse row lock. Never load its full catalogue. */
+    public function warehouseDeactivationBlockers(
+        Tenant $tenant,
+        Warehouse $warehouse,
+        EntityManagerInterface $entityManager,
+    ): array
+    {
+        if (!$entityManager->getConnection()->isTransactionActive()) {
+            throw new \LogicException('Warehouse deactivation checks require a database transaction and exclusive warehouse lock.');
+        }
+        if (!$warehouse->getTenant()->getId()->equals($tenant->getId())) {
+            throw new \DomainException('The warehouse does not belong to this tenant.');
+        }
+        $queries = [
+            'stock' => <<<'SQL'
+SELECT 1 FROM inventory_levels
+WHERE tenant_id = :tenant AND warehouse_id = :warehouse
+  AND (quantity <> 0 OR reserved_quantity <> 0 OR unavailable_quantity <> 0 OR incoming_quantity <> 0)
+LIMIT 1
+SQL,
+            'reservations' => <<<'SQL'
+SELECT 1 FROM sales_order_allocations allocation
+JOIN sales_order_items item ON item.id = allocation.sales_order_item_id
+JOIN sales_orders sales_order ON sales_order.id = item.sales_order_id
+WHERE sales_order.tenant_id = :tenant AND allocation.warehouse_id = :warehouse
+  AND allocation.status = 'reserved' AND allocation.quantity > 0
+LIMIT 1
+SQL,
+            'purchaseOrders' => <<<'SQL'
+SELECT 1 FROM purchase_orders
+WHERE tenant_id = :tenant AND warehouse_id = :warehouse
+  AND status IN ('draft', 'sent', 'partially_received')
+LIMIT 1
+SQL,
+            'transfers' => <<<'SQL'
+SELECT 1 FROM inventory_transfers
+WHERE tenant_id = :tenant
+  AND (source_warehouse_id = :warehouse OR destination_warehouse_id = :warehouse)
+  AND status IN ('draft', 'in_transit')
+LIMIT 1
+SQL,
+            'counts' => <<<'SQL'
+SELECT 1 FROM inventory_counts
+WHERE tenant_id = :tenant AND warehouse_id = :warehouse AND status = 'draft'
+LIMIT 1
+SQL,
+            'returns' => <<<'SQL'
+SELECT 1 FROM sales_returns
+WHERE tenant_id = :tenant AND warehouse_id = :warehouse
+  AND disposition = 'quarantine' AND quantity > 0
+LIMIT 1
+SQL,
+        ];
+        $blockers = [];
+        $parameters = ['tenant' => (string) $tenant->getId(), 'warehouse' => (string) $warehouse->getId()];
+        foreach ($queries as $reason => $query) {
+            if ($entityManager->getConnection()->fetchOne($query, $parameters) !== false) {
+                $blockers[] = $reason;
+            }
+        }
+
+        return $blockers;
     }
 
     public function defaultWarehouse(

@@ -4,6 +4,7 @@ import type { FormSubmitEvent } from '@nuxt/ui'
 
 definePageMeta({ layout: false })
 
+const localePath = useLocalePath()
 const toast = useToast()
 const { t } = useI18n()
 const loading = ref(false)
@@ -55,7 +56,7 @@ const submit = async (event: FormSubmitEvent<Schema>) => {
         <UButton :label="t('auth.sendResetInstructions')" type="submit" block :loading="loading" />
       </UForm>
       <template #footer>
-        <NuxtLink to="/login" class="text-sm font-medium text-primary">
+        <NuxtLink :to="localePath('/login')" class="text-sm font-medium text-primary">
           {{ t('auth.backToSignIn') }}
         </NuxtLink>
       </template>

@@ -10,6 +10,8 @@ use Symfony\Component\Uid\Uuid;
 #[ORM\UniqueConstraint(name: 'uniq_product_property_assignment', columns: ['product_id', 'property_id'])]
 class ProductPropertyAssignment
 {
+    use CatalogueAssignmentSources;
+
     #[ORM\Id]
     #[ORM\Column(type: 'uuid')]
     private Uuid $id;

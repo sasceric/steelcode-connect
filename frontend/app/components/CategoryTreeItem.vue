@@ -20,6 +20,7 @@ type CategoryNode = {
   childrenLoading: boolean
 }
 
+const localePath = useLocalePath()
 const props = defineProps<{
   node: CategoryNode
   depth?: number
@@ -193,7 +194,7 @@ onBeforeUnmount(destroySortable)
       />
       <UIcon name="i-lucide-folder" class="size-4 shrink-0 text-primary" />
       <NuxtLink
-        :to="`/catalogue/categories/${node.id}`"
+        :to="localePath(`/catalogue/categories/${node.id}`)"
         class="min-w-0 flex-1 truncate font-medium text-highlighted hover:text-primary"
       >
         {{ name }}

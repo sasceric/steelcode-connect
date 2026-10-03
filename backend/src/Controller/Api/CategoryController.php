@@ -236,6 +236,8 @@ final class CategoryController extends AbstractController
         foreach ($existingByProductId as $productId => $assignment) {
             if (!in_array($productId, $ids, true)) {
                 $em->remove($assignment);
+            } else {
+                $assignment->claimSource('manual');
             }
         }
         foreach ($products as $position => $product) {
@@ -535,7 +537,7 @@ final class CategoryController extends AbstractController
             throw $this->createAccessDeniedException();
         }
 
-        $membership = $em->getRepository(TenantMembership::class)->findOneBy(['user' => $user]);
+        $membership = $em->getRepository(TenantMembership::class)->forUser($user);
         if (!$membership instanceof TenantMembership || ($owner && $membership->getRole() !== 'owner')) {
             throw $this->createAccessDeniedException();
         }

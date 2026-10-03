@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
 
+const localePath = useLocalePath()
 const { t } = useI18n()
 
 const links = computed(
@@ -10,17 +11,17 @@ const links = computed(
         {
           label: t('nav.orders'),
           icon: 'i-lucide-receipt-text',
-          to: '/sales/orders'
+          to: localePath('/sales/orders')
         },
         {
           label: t('nav.pickLists'),
           icon: 'i-lucide-clipboard-list',
-          to: '/sales/picklists'
+          to: localePath('/sales/picklists')
         },
         {
           label: t('nav.customers'),
           icon: 'i-lucide-users',
-          to: '/sales/customers'
+          to: localePath('/sales/customers')
         }
       ]
     ] satisfies NavigationMenuItem[][]

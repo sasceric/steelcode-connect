@@ -59,6 +59,27 @@ pnpm preview
 
 Check out the [deployment documentation](https://nuxt.com/docs/getting-started/deployment) for more information.
 
+## Language routing
+
+Bosnian (`bs`) is the default and has no URL prefix. English uses `/en` and
+German uses `/de`; for example, `/catalogue/products`, `/en/catalogue/products`,
+and `/de/catalogue/products`. The URL determines the language, not the browser
+language or a saved language cookie.
+
+Use `useLocalePath()` for internal links, navigation, and redirects. Use
+`useRouteBaseName()` when identifying a page independently of its language.
+Do not prefix API endpoints, public assets, or external URLs.
+
+Run the unauthenticated route and login-redirect regression checks against a
+running frontend:
+
+```bash
+node --test tests/locale-routing.test.mjs
+```
+
+Set `LOCALE_TEST_BASE_URL` to test a different frontend URL. The suite does not
+create users, change business data, or restart services.
+
 ## Renovate integration
 
 Install [Renovate GitHub app](https://github.com/apps/renovate/installations/select_target) on your repository and you are good to go.

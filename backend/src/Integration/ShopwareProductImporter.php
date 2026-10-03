@@ -1283,17 +1283,21 @@ final class ShopwareProductImporter
             $existingByCategoryId[$assignment->getCategory()->getId()->toRfc4122()] = $assignment;
         }
         foreach ($existingByCategoryId as $categoryId => $assignment) {
-            if (!isset($categories[$categoryId])) {
+            if (!isset($categories[$categoryId]) && $assignment->releaseSource((string) $connection->getId())) {
                 $this->entityManager->remove($assignment);
             }
         }
         foreach (array_values($categories) as $position => $category) {
             if (!isset($existingByCategoryId[$category->getId()->toRfc4122()])) {
-                $this->entityManager->persist(new CategoryProduct(
+                $assignment = new CategoryProduct(
                     $category,
                     $product,
                     $position,
-                ));
+                );
+                $assignment->initializeSource((string) $connection->getId());
+                $this->entityManager->persist($assignment);
+            } else {
+                $existingByCategoryId[(string) $category->getId()]->claimSource((string) $connection->getId());
             }
         }
     }
@@ -1337,18 +1341,22 @@ final class ShopwareProductImporter
             $existingByPropertyId[$assignment->getProperty()->getId()->toRfc4122()] = $assignment;
         }
         foreach ($existingByPropertyId as $propertyId => $assignment) {
-            if (!isset($properties[$propertyId])) {
+            if (!isset($properties[$propertyId]) && $assignment->releaseSource((string) $connection->getId())) {
                 $this->entityManager->remove($assignment);
             }
         }
         foreach ($properties as $property) {
             if (!isset($existingByPropertyId[$property->getId()->toRfc4122()])) {
-                $this->entityManager->persist(new ProductPropertyAssignment(
+                $assignment = new ProductPropertyAssignment(
                     $tenant,
                     $product,
                     $property,
                     'shopware',
-                ));
+                );
+                $assignment->initializeSource((string) $connection->getId());
+                $this->entityManager->persist($assignment);
+            } else {
+                $existingByPropertyId[(string) $property->getId()]->claimSource((string) $connection->getId());
             }
         }
     }
@@ -1392,13 +1400,17 @@ final class ShopwareProductImporter
             $existingByTagId[$assignment->getTag()->getId()->toRfc4122()] = $assignment;
         }
         foreach ($existingByTagId as $tagId => $assignment) {
-            if (!isset($tags[$tagId])) {
+            if (!isset($tags[$tagId]) && $assignment->releaseSource((string) $connection->getId())) {
                 $this->entityManager->remove($assignment);
             }
         }
         foreach ($tags as $tagId => $tag) {
             if (!isset($existingByTagId[$tagId])) {
-                $this->entityManager->persist(new ProductTag($product, $tag));
+                $assignment = new ProductTag($product, $tag);
+                $assignment->initializeSource((string) $connection->getId());
+                $this->entityManager->persist($assignment);
+            } else {
+                $existingByTagId[$tagId]->claimSource((string) $connection->getId());
             }
         }
     }

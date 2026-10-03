@@ -35,6 +35,20 @@ class Product
     #[ORM\Column(type: 'json')]
     private array $optionValues = [];
 
+    /** Canonical per-connection attribute selections, not global group settings. */
+    #[ORM\Column(type: 'json', options: ['default' => '[]'])]
+    private array $attributeConfiguration = [];
+
+    public function getAttributeConfiguration(): array
+    {
+        return $this->attributeConfiguration;
+    }
+
+    public function updateAttributeConfiguration(string $sourceKey, array $attributes): void
+    {
+        $this->attributeConfiguration[$sourceKey] = $attributes;
+    }
+
     #[ORM\Column(length: 32)] private string $productType = 'physical';
     #[ORM\Column(length: 255, nullable: true)] private ?string $manufacturerNumber = null;
     #[ORM\ManyToOne]
@@ -270,10 +284,22 @@ class Product
     /** @param array<string, string> $optionValues */
     public function makeChildOf(self $parent, string $sku, ?string $ean, array $optionValues): void
     {
+        if (
+            $parent->getId()->equals($this->id)
+            || !$parent->getTenant()->getId()->equals($this->tenant->getId())
+        ) {
+            throw new \DomainException('A variant requires a different parent in the same tenant.');
+        }
         $this->parent = $parent;
         $this->sku = $sku;
         $this->ean = $ean;
         $this->optionValues = $optionValues;
+    }
+
+    public function clearVariantRelationship(): void
+    {
+        $this->parent = null;
+        $this->optionValues = [];
     }
     public function inheritCatalogDataFrom(self $parent): void
     {

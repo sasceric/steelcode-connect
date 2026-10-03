@@ -1,16 +1,18 @@
 <script setup lang="ts">
 import type { NavigationMenuItem } from '@nuxt/ui'
 
+const localePath = useLocalePath()
 const { t } = useI18n()
 const route = useRoute()
+const routeBaseName = useRouteBaseName()
 const isFullWidthListing = computed(() =>
   !route.params.id
   && [
-    '/catalogue/products',
-    '/catalogue/manufacturers',
-    '/catalogue/attributes',
-    '/catalogue/custom-fields'
-  ].includes(route.path)
+    'catalogue-products',
+    'catalogue-manufacturers',
+    'catalogue-attributes',
+    'catalogue-custom-fields'
+  ].includes(String(routeBaseName(route) || ''))
 )
 
 const links = computed(
@@ -20,22 +22,22 @@ const links = computed(
         {
           label: t('nav.products'),
           icon: 'i-lucide-package',
-          to: '/catalogue/products'
+          to: localePath('/catalogue/products')
         },
         {
           label: t('nav.categories'),
           icon: 'i-lucide-folder-tree',
-          to: '/catalogue/categories'
+          to: localePath('/catalogue/categories')
         },
         {
           label: t('nav.manufacturers'),
           icon: 'i-lucide-factory',
-          to: '/catalogue/manufacturers'
+          to: localePath('/catalogue/manufacturers')
         },
         {
           label: t('nav.attributes'),
           icon: 'i-lucide-list-tree',
-          to: '/catalogue/attributes'
+          to: localePath('/catalogue/attributes')
         }
       ]
     ] satisfies NavigationMenuItem[][]
